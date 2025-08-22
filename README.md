@@ -2,9 +2,24 @@
 
 A custom Home Assistant integration for gathering energy consumption/production data from the SSD IMS portal (ims.ssd.sk) with 15-minute resolution.
 
+## Data Characteristics & Limitations
+
+**Data Freshness**: The SSD IMS portal (ims.ssd.sk) provides only day-old data that is published after midnight. This means:
+- Data for the current day is not available
+- The most recent data available is from yesterday
+- Data is updated once daily after midnight
+
+**Data Resolution**: All metering data has 15-minute resolution intervals.
+
+**Current Functionality**: This component currently provides only summary (aggregated) data for:
+- Yesterday (previous day totals)
+- This week (current week totals)
+
+*Note: Detailed 15-minute interval data access may be added in future versions.*
+
 ## Features
 
-- **Real-time Energy Monitoring**: Track active and reactive power consumption/supply
+- **Energy Monitoring**: Track active and reactive power consumption/supply (day-old data)
 - **Multiple Time Periods**: Data aggregation for yesterday and last week
 - **Multiple POD Support**: Monitor multiple Points of Delivery simultaneously
 - **Custom POD Names**: Set friendly names for your Points of Delivery
