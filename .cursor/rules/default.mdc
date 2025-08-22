@@ -1,0 +1,36 @@
+---
+alwaysApply: true
+---
+
+# SSD IMS Home Assistant Integration - Coding Standards
+
+## Objective
+Enforce coding standards and best practices directly within the development environment.
+
+## Rules
+
+### Type Hinting
+- All function definitions must include type hints
+- Use proper typing for all parameters and return values
+- Import typing modules as needed (List, Dict, Optional, etc.)
+m
+### Documentation
+- Public modules, classes, and functions should have docstrings
+- Use Google-style docstrings for consistency
+- Include parameter descriptions and return value information
+- Avoid unwanted summmary files, unless requested
+
+### Code Style
+- Adherence to PEP 8 standards
+- Use 4 spaces for indentation (no tabs)
+- Maximum line length of 88 characters (black default)
+- Use snake_case for variables and functions
+- Use PascalCase for classes
+- Use UPPER_CASE for constants
+
+### Testing
+- New code additions must be accompanied by corresponding tests
+- Aim for >90% test coverage
+- Use pytest for testing framework
+- Include both unit and integration tests
+- Run tests in docker compose

@@ -130,7 +130,19 @@ class ChartData(BaseModel):
 
 
 class AggregatedData(BaseModel):
-    """Aggregated data for different time periods."""
-
-    yesterday: Dict[str, float] = Field(default_factory=dict)
-    last_week: Dict[str, float] = Field(default_factory=dict)
+    """Aggregated data for different time periods.
+    
+    Note: This model is flexible and can contain any time period keys
+    as defined in TIME_PERIODS_CONFIG. The structure is:
+    {
+        "period_key": {
+            "sensor_type": float_value,
+            ...
+        },
+        ...
+    }
+    """
+    
+    # Allow arbitrary fields for dynamic time periods
+    class Config:
+        extra = "allow"

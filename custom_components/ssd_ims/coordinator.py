@@ -1,5 +1,7 @@
 """Data coordinator for SSD IMS integration."""
+import asyncio
 import logging
+import random
 from datetime import datetime, timedelta
 from typing import Any, Dict
 from zoneinfo import ZoneInfo
@@ -10,11 +12,11 @@ from homeassistant.helpers.update_coordinator import (DataUpdateCoordinator,
                                                       UpdateFailed)
 
 from .api_client import SsdImsApiClient
-from .const import (CONF_POINT_OF_DELIVERY, DEFAULT_POINT_OF_DELIVERY,
-                    DEFAULT_SCAN_INTERVAL, DOMAIN,
+from .const import (API_DELAY_MAX, API_DELAY_MIN, CONF_POINT_OF_DELIVERY,
+                    DEFAULT_POINT_OF_DELIVERY, DEFAULT_SCAN_INTERVAL, DOMAIN,
                     SENSOR_TYPE_ACTUAL_CONSUMPTION, SENSOR_TYPE_ACTUAL_SUPPLY,
                     SENSOR_TYPE_IDLE_CONSUMPTION, SENSOR_TYPE_IDLE_SUPPLY,
-                    SENSOR_TYPES)
+                    SENSOR_TYPES, TIME_PERIODS_CONFIG)
 from .models import ChartData, PointOfDelivery
 
 _LOGGER = logging.getLogger(__name__)
@@ -36,6 +38,13 @@ class SsdImsDataCoordinator(DataUpdateCoordinator):
         )
 
         super().__init__(hass, _LOGGER, name=DOMAIN, update_interval=scan_interval)
+
+    def _get_random_api_delay(self) -> float:
+        """Get random API delay between configured min and max values."""
+        # Generate random delay between API_DELAY_MIN and API_DELAY_MAX
+        delay = random.uniform(API_DELAY_MIN, API_DELAY_MAX)
+        # Ensure minimum of 1 second (hardcoded as requested)
+        return max(0.3, delay)
 
     async def _async_update_data(self) -> Dict[str, Any]:
         """Fetch data from API."""
@@ -80,7 +89,7 @@ class SsdImsDataCoordinator(DataUpdateCoordinator):
             # Fetch data for each POD
             all_pod_data = {}
 
-            for pod_id in pod_ids:
+            for pod_index, pod_id in enumerate(pod_ids):
                 _LOGGER.debug("Processing POD: %s", pod_id)
                 try:
                     pod = self.pods.get(pod_id)
@@ -91,66 +100,93 @@ class SsdImsDataCoordinator(DataUpdateCoordinator):
                         _LOGGER.debug("Available PODs: %s", list(self.pods.keys()))
                         continue
 
-                    # Calculate date ranges for each period in Slovakia timezone
-                    yesterday_start = now.replace(
-                        hour=0, minute=0, second=0, microsecond=0
-                    ) - timedelta(days=1)
-                    yesterday_end = yesterday_start + timedelta(days=1)
-
-                    # Last week: previous 7 days ending yesterday
-                    last_week_start = yesterday_start - timedelta(days=6)
-                    last_week_end = yesterday_end
-
-                    _LOGGER.debug(
-                        "Time periods for POD %s - yesterday: %s to %s, last_week: %s to %s",
-                        pod_id,
-                        yesterday_start,
-                        yesterday_end,
-                        last_week_start,
-                        last_week_end,
-                    )
-
-                    # Fetch separate chart data for each period
-                    chart_data_yesterday = await self.api_client.get_chart_data(
-                        pod_id, yesterday_start, yesterday_end
-                    )
+                    # Calculate date ranges and fetch data for each configured period
+                    chart_data_by_period = {}
+                    period_info = {}
                     
-                    chart_data_last_week = await self.api_client.get_chart_data(
-                        pod_id, last_week_start, last_week_end
-                    )
-
-                    _LOGGER.debug(
-                        "Yesterday data for POD %s: metering_datetime count=%d, sum_actual_consumption=%s",
-                        pod_id,
-                        len(chart_data_yesterday.metering_datetime),
-                        chart_data_yesterday.sum_actual_consumption,
-                    )
+                    _LOGGER.debug("Using random API delay between %s-%s seconds between requests", API_DELAY_MIN, API_DELAY_MAX)
                     
+                    for period_index, (period_key, config) in enumerate(TIME_PERIODS_CONFIG.items()):
+                        try:
+                            # Use the callback to calculate date range
+                            calculate_range = config["calculate_range"]
+                            period_start, period_end = calculate_range(now)
+                            
+                            period_info[period_key] = {
+                                "start": period_start,
+                                "end": period_end,
+                                "days": (period_end - period_start).days,
+                                "display_name": config["display_name"]
+                            }
+                            
+                            # Add delay before API call (except for first request)
+                            if period_index > 0:
+                                delay = self._get_random_api_delay()
+                                _LOGGER.debug(
+                                    "Sleeping %.2f seconds before fetching %s data for POD %s",
+                                    delay, period_key, pod_id
+                                )
+                                await asyncio.sleep(delay)
+                            
+                            # Fetch chart data for this period
+                            _LOGGER.debug("Fetching %s data for POD %s", period_key, pod_id)
+                            chart_data_by_period[period_key] = await self.api_client.get_chart_data(
+                                pod_id, period_start, period_end
+                            )
+                            
+                        except Exception as e:
+                            _LOGGER.error(
+                                "Error calculating date range for period %s: %s", 
+                                period_key, e
+                            )
+                            continue
+
                     _LOGGER.debug(
-                        "Last week data for POD %s: metering_datetime count=%d, sum_actual_consumption=%s",
+                        "Time periods for POD %s: %s",
                         pod_id,
-                        len(chart_data_last_week.metering_datetime),
-                        chart_data_last_week.sum_actual_consumption,
+                        {k: f"{v['start']} to {v['end']} ({v['days']} days)" 
+                         for k, v in period_info.items()}
                     )
 
-                    # Aggregate data by time periods using separate chart data
-                    aggregated_data = self._aggregate_data(chart_data_yesterday, chart_data_last_week)
+                    # Log chart data summary for debugging
+                    for period_key, chart_data in chart_data_by_period.items():
+                        _LOGGER.debug(
+                            "%s data for POD %s: metering_datetime count=%d, sum_actual_consumption=%s",
+                            TIME_PERIODS_CONFIG[period_key]["display_name"],
+                            pod_id,
+                            len(chart_data.metering_datetime),
+                            chart_data.sum_actual_consumption,
+                        )
+
+                    # Aggregate data by time periods using configurable chart data
+                    aggregated_data = self._aggregate_data(chart_data_by_period)
 
                     _LOGGER.debug(
                         "Aggregated data for POD %s: %s", pod_id, aggregated_data
                     )
 
                     # Store POD data using stable pod_id as key
-                    all_pod_data[pod_id] = {
-                        "session_pod_id": pod.value,  # Store session pod_id for internal
-                        # reference
-                        "pod_text": pod.text,  # Store original text for
-                        # reference
-                        "chart_data_yesterday": chart_data_yesterday,
-                        "chart_data_last_week": chart_data_last_week,
+                    pod_data = {
+                        "session_pod_id": pod.value,  # Store session pod_id for internal reference
+                        "pod_text": pod.text,  # Store original text for reference
                         "aggregated_data": aggregated_data,
                         "last_update": now.isoformat(),
                     }
+                    
+                    # Add chart data for each period dynamically
+                    for period_key, chart_data in chart_data_by_period.items():
+                        pod_data[f"chart_data_{period_key}"] = chart_data
+                    
+                    all_pod_data[pod_id] = pod_data
+
+                    # Add delay between PODs (except for last POD)
+                    if pod_index < len(pod_ids) - 1:
+                        delay = self._get_random_api_delay()
+                        _LOGGER.debug(
+                            "Sleeping %.2f seconds before processing next POD",
+                            delay
+                        )
+                        await asyncio.sleep(delay)
 
                 except Exception as e:
                     error_msg = str(e)
@@ -243,67 +279,42 @@ class SsdImsDataCoordinator(DataUpdateCoordinator):
 
             raise
 
-    def _aggregate_data(self, chart_data_yesterday: ChartData, chart_data_last_week: ChartData) -> Dict[str, Dict[str, float]]:
-        """Aggregate data by different time periods using separate chart data for each period."""
-        # Initialize aggregated data structure
-        aggregated = {"yesterday": {}, "last_week": {}}
+    def _aggregate_data(self, chart_data_by_period: Dict[str, ChartData]) -> Dict[str, Dict[str, float]]:
+        """Aggregate data by different time periods using configurable chart data."""
+        aggregated = {}
+        
+        for period_key, chart_data in chart_data_by_period.items():
+            period_name = TIME_PERIODS_CONFIG[period_key]["display_name"]
+            aggregated[period_key] = {}
+            
+            if chart_data and hasattr(chart_data, "sum_actual_consumption"):
+                # Extract all sensor values for this period
+                aggregated[period_key][SENSOR_TYPE_ACTUAL_CONSUMPTION] = (
+                    chart_data.sum_actual_consumption or 0.0
+                )
+                aggregated[period_key][SENSOR_TYPE_ACTUAL_SUPPLY] = (
+                    chart_data.sum_actual_supply or 0.0
+                )
+                aggregated[period_key][SENSOR_TYPE_IDLE_CONSUMPTION] = (
+                    chart_data.sum_idle_consumption or 0.0
+                )
+                aggregated[period_key][SENSOR_TYPE_IDLE_SUPPLY] = (
+                    chart_data.sum_idle_supply or 0.0
+                )
 
-        # Use yesterday chart data for yesterday period
-        if chart_data_yesterday and hasattr(chart_data_yesterday, "sum_actual_consumption"):
-            aggregated["yesterday"][SENSOR_TYPE_ACTUAL_CONSUMPTION] = (
-                chart_data_yesterday.sum_actual_consumption or 0.0
-            )
-            aggregated["yesterday"][SENSOR_TYPE_ACTUAL_SUPPLY] = (
-                chart_data_yesterday.sum_actual_supply or 0.0
-            )
-            aggregated["yesterday"][SENSOR_TYPE_IDLE_CONSUMPTION] = (
-                chart_data_yesterday.sum_idle_consumption or 0.0
-            )
-            aggregated["yesterday"][SENSOR_TYPE_IDLE_SUPPLY] = (
-                chart_data_yesterday.sum_idle_supply or 0.0
-            )
-
-            _LOGGER.debug(
-                "Yesterday chart data summaries: actual_consumption=%s, "
-                "actual_supply=%s, idle_consumption=%s, idle_supply=%s",
-                chart_data_yesterday.sum_actual_consumption,
-                chart_data_yesterday.sum_actual_supply,
-                chart_data_yesterday.sum_idle_consumption,
-                chart_data_yesterday.sum_idle_supply,
-            )
-        else:
-            # Fallback: set all values to 0 if no chart data available
-            for sensor_type in SENSOR_TYPES:
-                aggregated["yesterday"][sensor_type] = 0.0
-            _LOGGER.warning("No yesterday chart data available, setting yesterday values to 0")
-
-        # Use last week chart data for last week period
-        if chart_data_last_week and hasattr(chart_data_last_week, "sum_actual_consumption"):
-            aggregated["last_week"][SENSOR_TYPE_ACTUAL_CONSUMPTION] = (
-                chart_data_last_week.sum_actual_consumption or 0.0
-            )
-            aggregated["last_week"][SENSOR_TYPE_ACTUAL_SUPPLY] = (
-                chart_data_last_week.sum_actual_supply or 0.0
-            )
-            aggregated["last_week"][SENSOR_TYPE_IDLE_CONSUMPTION] = (
-                chart_data_last_week.sum_idle_consumption or 0.0
-            )
-            aggregated["last_week"][SENSOR_TYPE_IDLE_SUPPLY] = (
-                chart_data_last_week.sum_idle_supply or 0.0
-            )
-
-            _LOGGER.debug(
-                "Last week chart data summaries: actual_consumption=%s, "
-                "actual_supply=%s, idle_consumption=%s, idle_supply=%s",
-                chart_data_last_week.sum_actual_consumption,
-                chart_data_last_week.sum_actual_supply,
-                chart_data_last_week.sum_idle_consumption,
-                chart_data_last_week.sum_idle_supply,
-            )
-        else:
-            # Fallback: set all values to 0 if no chart data available
-            for sensor_type in SENSOR_TYPES:
-                aggregated["last_week"][sensor_type] = 0.0
-            _LOGGER.warning("No last week chart data available, setting last week values to 0")
+                _LOGGER.debug(
+                    "%s chart data summaries: actual_consumption=%s, "
+                    "actual_supply=%s, idle_consumption=%s, idle_supply=%s",
+                    period_name,
+                    chart_data.sum_actual_consumption,
+                    chart_data.sum_actual_supply,
+                    chart_data.sum_idle_consumption,
+                    chart_data.sum_idle_supply,
+                )
+            else:
+                # Fallback: set all values to 0 if no chart data available
+                for sensor_type in SENSOR_TYPES:
+                    aggregated[period_key][sensor_type] = 0.0
+                _LOGGER.warning("No %s chart data available, setting %s values to 0", period_name, period_key)
 
         return aggregated

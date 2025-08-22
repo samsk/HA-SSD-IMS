@@ -1,36 +1,37 @@
 # SSD IMS Home Assistant Integration
 
-A custom Home Assistant integration for gathering energy consumption/production data from the SSD IMS portal (ims.ssd.sk) with 15-minute resolution.
+A custom Home Assistant integration for gathering energy consumption/production data from the SSD IMS portal (ims.ssd.sk) with 15-minute resolution and comprehensive time period coverage.
 
-## Data Characteristics & Limitations
+## Data Characteristics & Capabilities
 
-**Data Freshness**: The SSD IMS portal (ims.ssd.sk) provides only day-old data that is published after midnight. This means:
+**Data Freshness**: The SSD IMS portal (ims.ssd.sk) provides day-old data that is published after midnight. This means:
 - Data for the current day is not available
 - The most recent data available is from yesterday
 - Data is updated once daily after midnight
+- Integration updates every 60 minutes by default for optimal history tracking
 
-**Data Resolution**: All metering data has 15-minute resolution intervals.
+**Data Resolution**: All metering data has 15-minute resolution intervals from the source.
 
-**Current Functionality**: This component currently provides only summary (aggregated) data for:
-- Yesterday (previous day totals)
-- This week (current week totals)
+**Time Period Coverage**: The integration provides configurable summary (aggregated) data across multiple time periods for comprehensive energy monitoring and historical analysis.
 
-*Note: Detailed 15-minute interval data access may be added in future versions.*
+*Note: The callback-based time period system allows easy extension for additional periods without code changes.*
 
 ## Features
 
 - **Energy Monitoring**: Track active and reactive power consumption/supply (day-old data)
-- **Multiple Time Periods**: Data aggregation for yesterday and last week
+- **Configurable Time Periods**: Flexible time period system with 7 built-in periods
+- **Enhanced History Tracking**: Optimized for Home Assistant dashboard history visualization
 - **Multiple POD Support**: Monitor multiple Points of Delivery simultaneously
 - **Custom POD Names**: Set friendly names for your Points of Delivery
-- **8 Sensors per POD**: Complete coverage of all energy metrics across different time periods
+- **Comprehensive Sensor Coverage**: Multiple sensors per POD covering all energy metrics and time periods
 - **Automatic POD Discovery**: Automatically discovers available points of delivery
-- **Efficient Data Fetching**: Incremental updates with smart caching
+- **Callback-Based Architecture**: Extensible time period system for easy customization
+- **Efficient Data Fetching**: Smart API usage with period-specific data aggregation
 - **Robust Error Handling**: Comprehensive error handling and retry logic
 
 ## Supported Sensors
 
-The integration creates 8 sensors **per Point of Delivery** covering all combinations of:
+The integration creates **28 sensors per Point of Delivery** covering all combinations of:
 
 **Energy Types:**
 - Active Consumption (kWh)
@@ -39,30 +40,40 @@ The integration creates 8 sensors **per Point of Delivery** covering all combina
 - Idle Supply (kVARh)
 
 **Time Periods:**
-- Yesterday
-- Last Week
+- Yesterday (1 day)
+- Last 2 Days (2 days)
+- Last 3 Days (3 days)
+- Last 7 Days (7 days)
+- This Week (Monday to tomorrow midnight)
+- This Month (1st to tomorrow midnight)
+- Last 30 Days (30 days)
+
+**Enhanced History Tracking**: The multiple time periods provide rich historical data for Home Assistant dashboards, enabling detailed energy consumption analysis and trend visualization.
 
 **Sensor Naming Examples:**
 
 With friendly name "house1":
 - `sensor.house1_active_consumption_yesterday`
-- `sensor.house1_active_consumption_last_week`
+- `sensor.house1_active_consumption_last_2_days`
+- `sensor.house1_active_consumption_last_3_days`
+- `sensor.house1_active_consumption_last_7_days`
+- `sensor.house1_active_consumption_this_week`
+- `sensor.house1_active_consumption_this_month`
+- `sensor.house1_active_consumption_last_30_days`
 - `sensor.house1_active_supply_yesterday`
-- `sensor.house1_active_supply_last_week`
+- `sensor.house1_active_supply_this_week`
 - `sensor.house1_idle_consumption_yesterday`
-- `sensor.house1_idle_consumption_last_week`
+- `sensor.house1_idle_consumption_this_week`
 - `sensor.house1_idle_supply_yesterday`
-- `sensor.house1_idle_supply_last_week`
+- `sensor.house1_idle_supply_this_week`
+- *(... and so on for all combinations)*
 
 With auto-generated name (if no friendly name set):
 - `sensor.99XXX1234560000G_active_consumption_yesterday`
-- `sensor.99XXX1234560000G_active_consumption_last_week`
+- `sensor.99XXX1234560000G_active_consumption_this_week`
 - `sensor.99XXX1234560000G_active_supply_yesterday`
-- `sensor.99XXX1234560000G_active_supply_last_week`
-- `sensor.99XXX1234560000G_idle_consumption_yesterday`
-- `sensor.99XXX1234560000G_idle_consumption_last_week`
-- `sensor.99XXX1234560000G_idle_supply_yesterday`
-- `sensor.99XXX1234560000G_idle_supply_last_week`
+- `sensor.99XXX1234560000G_idle_consumption_last_7_days`
+- *(... and so on for all combinations)*
 
 ## Installation
 
@@ -100,7 +111,7 @@ make deploy
 4. Enter your credentials:
    - **Username**: Your SSD IMS portal username
    - **Password**: Your SSD IMS portal password
-   - **Scan Interval**: Update frequency (15 or 60 minutes, default: 60)
+   - **Scan Interval**: Update frequency (60 or 120 minutes, default: 60)
 5. Select your Points of Delivery (PODs) to monitor
 6. Optionally set friendly names for your PODs (e.g., "house1", "garage", "solar")
 7. Review the sensor preview and confirm configuration
@@ -112,7 +123,7 @@ make deploy
 ssd_ims:
   username: !secret ssd_username
   password: !secret ssd_password
-  scan_interval: 60  # minutes (15 or 60)
+  scan_interval: 60  # minutes (60 or 120)
   point_of_delivery: ["pod_id_1", "pod_id_2"]  # List of POD IDs
   pod_name_mapping:
     "pod_id_1": "house1"
@@ -124,6 +135,78 @@ ssd_ims:
 ssd_username: "your_username"
 ssd_password: "your_password"
 ```
+
+## Time Periods Configuration
+
+### Built-in Time Periods
+
+The integration includes 7 configurable time periods designed for comprehensive energy monitoring:
+
+| Period | Duration | Description |
+|--------|----------|-------------|
+| `yesterday` | 1 day | Previous day totals |
+| `last_2_days` | 2 days | Previous 2 days ending yesterday |
+| `last_3_days` | 3 days | Previous 3 days ending yesterday |
+| `last_7_days` | 7 days | Previous 7 days ending yesterday |
+| `this_week` | Variable | Current week from Monday to tomorrow midnight |
+| `this_month` | Variable | Current month from 1st to tomorrow midnight |
+| `last_30_days` | 30 days | Previous 30 days ending yesterday |
+
+### Callback-Based Architecture
+
+The time periods system uses a flexible callback-based architecture that allows:
+
+- **Easy Extension**: Add new time periods without modifying core code
+- **Custom Logic**: Implement complex date calculations for special periods
+- **Reusable Components**: Share common date calculation logic
+- **Type Safety**: All callbacks follow consistent interfaces
+
+### Adding Custom Time Periods
+
+To add a new time period (e.g., "Last Month"), simply modify `custom_components/ssd_ims/const.py`:
+
+```python
+# 1. Add period constant
+PERIOD_LAST_MONTH: Final = "last_month"
+
+# 2. Add callback function
+def _calculate_last_month_range(now: datetime) -> Tuple[datetime, datetime]:
+    """Calculate previous calendar month range."""
+    # Custom calculation logic here
+    return start_date, end_date
+
+# 3. Add to configuration
+PERIOD_LAST_MONTH: {
+    "display_name": "Last Month",
+    "description": "Previous calendar month",
+    "calculate_range": _calculate_last_month_range,
+}
+```
+
+No changes required in other files - the system automatically picks up new periods!
+
+## API Rate Limiting
+
+### Built-in Protection
+
+The integration includes automatic API rate limiting to prevent abuse and ensure reliable operation:
+
+- **Smart Timing**: Delays are applied between time periods and between PODs
+- **Efficient Batching**: No delay for the first request in each batch
+- **Automatic**: No user configuration required - works out of the box
+
+### How It Works
+
+The integration makes multiple API calls during each update cycle:
+- **7 calls per POD** (one for each time period)
+- **Additional random delays** between PODs when monitoring multiple delivery points
+
+### Benefits
+
+- **API Courtesy**: Prevents overwhelming the SSD IMS portal
+- **Reliable Operation**: Reduces chance of rate limiting or blocking
+- **Randomized Traffic**: Avoids predictable load patterns
+- **Maintenance-Free**: No configuration needed - works automatically
 
 ## API Integration
 
@@ -235,8 +318,9 @@ pytest tests/test_api_client.py::TestSsdImsApiClient::TestAuthentication -v
 
 2. **No Data Available**
    - Check if your POD has recent metering data
-   - Verify the scan interval is appropriate
+   - Verify the scan interval is appropriate (60-120 minutes)
    - Check Home Assistant logs for errors
+   - Note: With 28 sensors per POD, initial data loading may take up to 2 minutes
 
 3. **Connection Errors**
    - Verify internet connectivity
@@ -278,6 +362,18 @@ For issues and questions:
 4. Provide detailed information about your setup
 
 ## Changelog
+
+### Version 2.0.0
+- **Callback-Based Time Periods**: Completely refactored time period system with configurable callbacks
+- **Enhanced History Tracking**: 7 built-in time periods for better Home Assistant dashboard visualization
+- **Improved Sensor Coverage**: 28 sensors per POD (up from 8) across all time periods
+- **Extensible Architecture**: Easy addition of custom time periods without code changes
+- **Better Data Organization**: Replaced "last_week" with "last_7_days" for clarity
+- **New Time Periods**: Added "This Week", "This Month", "Last 2/3 Days" periods
+- **Optimized Updates**: Adjusted scan intervals for better performance (60-120 minutes)
+- **Zero Code Duplication**: Eliminated redundant date calculation logic
+- **Type Safety**: Consistent callback interfaces with proper type hints
+- **Maintenance-Free**: No user configuration needed for API rate limiting
 
 ### Version 1.0.0
 - Initial release

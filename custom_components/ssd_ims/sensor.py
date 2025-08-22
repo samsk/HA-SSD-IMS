@@ -12,10 +12,10 @@ from homeassistant.helpers.entity_platform import AddEntitiesCallback
 from homeassistant.helpers.typing import StateType
 
 from .const import (CONF_POD_NAME_MAPPING, CONF_POINT_OF_DELIVERY,
-                    DEFAULT_POINT_OF_DELIVERY, DOMAIN, NAME, PERIOD_LAST_WEEK,
-                    PERIOD_YESTERDAY, SENSOR_TYPE_ACTUAL_CONSUMPTION,
-                    SENSOR_TYPE_ACTUAL_SUPPLY, SENSOR_TYPE_IDLE_CONSUMPTION,
-                    SENSOR_TYPE_IDLE_SUPPLY, SENSOR_TYPES, TIME_PERIODS)
+                    DEFAULT_POINT_OF_DELIVERY, DOMAIN,
+                    SENSOR_TYPE_ACTUAL_CONSUMPTION, SENSOR_TYPE_ACTUAL_SUPPLY, 
+                    SENSOR_TYPE_IDLE_CONSUMPTION, SENSOR_TYPE_IDLE_SUPPLY, 
+                    SENSOR_TYPES, TIME_PERIODS, TIME_PERIODS_CONFIG)
 from .coordinator import SsdImsDataCoordinator
 
 _LOGGER = logging.getLogger(__name__)
@@ -221,8 +221,8 @@ class SsdImsSensor(SensorEntity):
         )
 
     def _generate_sensor_name(self) -> str:
-        """Generate sensor name based on type and period only."""
-        # Sensor type names
+        """Generate sensor name based on type and period using configuration."""
+        # Sensor type names  
         type_names = {
             SENSOR_TYPE_ACTUAL_CONSUMPTION: "Active Consumption",
             SENSOR_TYPE_ACTUAL_SUPPLY: "Active Supply",
@@ -230,14 +230,11 @@ class SsdImsSensor(SensorEntity):
             SENSOR_TYPE_IDLE_SUPPLY: "Idle Supply",
         }
 
-        # Period names
-        period_names = {
-            PERIOD_YESTERDAY: "Yesterday",
-            PERIOD_LAST_WEEK: "Last Week",
-        }
-
         type_name = type_names.get(self.sensor_type, self.sensor_type)
-        period_name = period_names.get(self.period, self.period)
+        
+        # Get period display name from configuration
+        period_config = TIME_PERIODS_CONFIG.get(self.period, {})
+        period_name = period_config.get("display_name", self.period)
 
         return f"{type_name} {period_name}"
 
