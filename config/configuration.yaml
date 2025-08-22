@@ -1,0 +1,29 @@
+# IXField Cloud Integration Configuration
+# This is a minimal configuration example with reverse proxy settings
+
+# Home Assistant Core Configuration
+homeassistant:
+  name: Home Assistant
+
+# HTTP Configuration with Reverse Proxy Support
+http:
+  # Basic HTTP settings
+  server_port: 8123
+  use_x_forwarded_for: true  # Important for reverse proxy
+  trusted_proxies:
+    - 127.0.0.1
+    - ::1
+    - 172.16.0.0/12  # Docker network
+    - 192.168.0.0/16  # Local network
+    - 10.0.0.0/8     # Private network
+
+  # Headers for reverse proxy
+  ip_ban_enabled: false
+  login_attempts_threshold: 5
+
+# Logging Configuration
+logger:
+  default: warning
+  logs:
+    custom_components.ssd_ims: debug  # Enable debug logging for SSD IMS
+    #homeassistant.components.http: info

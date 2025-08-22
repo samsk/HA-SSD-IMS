@@ -1,0 +1,11 @@
+{
+  "domain": "ssd_ims",
+  "name": "SSD IMS",
+  "documentation": "https://github.com/samsk/ha-ssd-ims",
+  "dependencies": [],
+  "codeowners": ["@samsk"],
+  "requirements": ["aiohttp>=3.9.0", "pydantic>=2.5.0"],
+  "version": "1.0.0",
+  "config_flow": true,
+  "iot_class": "cloud_polling"
+}

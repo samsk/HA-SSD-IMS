@@ -1,0 +1,136 @@
+"""Data models for SSD IMS integration."""
+import re
+from datetime import datetime
+from typing import Any, Dict, List, Optional
+
+from pydantic import BaseModel, Field
+
+
+class UserProfile(BaseModel):
+    """User profile model."""
+
+    user_id: int = Field(alias="userId")
+    username: str
+    full_name: str = Field(alias="fullName")
+    email: str
+    created_on: datetime = Field(alias="createdOn")
+    changed_on: datetime = Field(alias="changedOn")
+
+
+class AuthResponse(BaseModel):
+    """Authentication response model."""
+
+    user_profile: UserProfile = Field(alias="userProfile")
+    user_actions: List[int] = Field(alias="userActions")
+    password_expiration_date: datetime = Field(alias="passwordExpirationDate")
+    show_password_change_warning: bool = Field(alias="showPasswordChangeWarning")
+
+
+class PointOfDelivery(BaseModel):
+    """Point of delivery model."""
+
+    text: str
+    value: str
+
+    @property
+    def id(self) -> str:
+        """Extract stable 16-20 character POD ID from text.
+
+        Returns:
+            Extracted POD ID (16-20 chars)
+
+        Raises:
+            ValueError: If a valid POD ID cannot be extracted
+        """
+        # First, try to extract POD number from format like
+        # "99XXX1234560000G (Rodinný dom)"
+        # Look for 16-20 character alphanumeric strings at the start
+        match = re.search(r"^([A-Z0-9]{16,20})", self.text)
+        if match:
+            extracted_id = match.group(1)
+            # Verify it's exactly 16-20 characters
+            if 16 <= len(extracted_id) <= 20:
+                return extracted_id
+            else:
+                raise ValueError(
+                    f"Extracted ID length invalid: {extracted_id} "
+                    f"(length: {len(extracted_id)}, expected 16-20)"
+                )
+
+        # If that fails, check if it's already a POD number format (16-20 chars)
+        if re.match(r"^[A-Z0-9]{16,20}$", self.text):
+            return self.text
+
+        # If we get here, we couldn't extract a valid POD ID
+        raise ValueError(
+            f"Could not extract valid POD ID from text: {self.text} "
+            f"(length: {len(self.text)})"
+        )
+
+
+class PodNameMapping(BaseModel):
+    """POD name mapping model for friendly names."""
+
+    pod_id: str
+    original_name: str
+    friendly_name: str
+
+
+class QualityType(BaseModel):
+    """Quality type model."""
+
+    value: str
+    text: str
+    codebook: str
+
+
+class MeteringDataRow(BaseModel):
+    """Individual metering data row."""
+
+    values: List[Any]
+
+
+class MeteringDataResponse(BaseModel):
+    """Metering data response model."""
+
+    columns: List[Dict[str, Any]]
+    rows: List[MeteringDataRow]
+    page: Optional[Dict[str, Any]] = None
+
+
+class MeteringData(BaseModel):
+    """Processed metering data point."""
+
+    metering_datetime: datetime
+    period: int
+    actual_consumption: Optional[float] = None
+    actual_supply: Optional[float] = None
+    idle_consumption: Optional[float] = None
+    idle_supply: Optional[float] = None
+
+
+class ChartData(BaseModel):
+    """Summary chart data model."""
+
+    metering_datetime: List[str] = Field(alias="meteringDatetime", default_factory=list)
+    actual_consumption: List[float] = Field(
+        alias="actualConsumption", default_factory=list
+    )
+    actual_supply: List[float] = Field(alias="actualSupply", default_factory=list)
+    idle_consumption: List[float] = Field(alias="idleConsumption", default_factory=list)
+    idle_supply: List[float] = Field(alias="idleSupply", default_factory=list)
+    sum_actual_consumption: Optional[float] = Field(
+        alias="sumActualConsumption", default=0.0
+    )
+    sum_actual_supply: Optional[float] = Field(alias="sumActualSupply", default=0.0)
+    sum_idle_consumption: Optional[float] = Field(
+        alias="sumIdleConsumption", default=0.0
+    )
+    sum_idle_supply: Optional[float] = Field(alias="sumIdleSupply", default=0.0)
+
+
+class AggregatedData(BaseModel):
+    """Aggregated data for different time periods."""
+
+    yesterday: Dict[str, float] = Field(default_factory=dict)
+    last_week: Dict[str, float] = Field(default_factory=dict)

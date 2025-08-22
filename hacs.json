@@ -1,0 +1,12 @@
+{
+  "name": "SSD IMS Integration",
+  "render_readme": true,
+  "zip_release": false,
+  "filename": "custom_components/ssd_ims",
+  "content_in_root": false,
+  "hacs": "1.0.0",
+  "hide_default_branch": false,
+  "country": [
+    "SK"
+  ]
+}
