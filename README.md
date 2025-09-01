@@ -363,7 +363,7 @@ For issues and questions:
 
 ## Changelog
 
-### Version 2.0.0
+### Version 1.1.0
 - **Callback-Based Time Periods**: Completely refactored time period system with configurable callbacks
 - **Enhanced History Tracking**: 7 built-in time periods for better Home Assistant dashboard visualization
 - **Improved Sensor Coverage**: 28 sensors per POD (up from 8) across all time periods
