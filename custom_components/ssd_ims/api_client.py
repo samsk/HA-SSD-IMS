@@ -27,10 +27,12 @@ def _log_data_sample(data: Dict[str, Any], field_name: str, max_sample_size: int
     if total_len == 0:
         return f"Field '{field_name}' is empty list"
     
-    # Find problematic entries
+    # Find problematic entries (None values are now valid for supply fields)
     problems = []
     for i, val in enumerate(field_data):
-        if val is None or (isinstance(val, str) and val.strip() == ""):
+        if val is None:
+            continue  # None is now valid - skip it
+        elif isinstance(val, str) and val.strip() == "":
             problems.append(i)
         elif not isinstance(val, (int, float, str)):
             problems.append(i)

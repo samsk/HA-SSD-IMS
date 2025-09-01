@@ -145,11 +145,8 @@ class ChartData(BaseModel):
         result = []
         for i, item in enumerate(v):
             if item is None:
-                raise ValueError(
-                    f"Field '{info.field_name}' at index {i}: "
-                    f"Found None value. Raw data at position {i}: {item}. "
-                    f"Full list preview: {v[:min(10, len(v))]}{'...' if len(v) > 10 else ''}"
-                )
+                # Skip None values - they're valid for supply data when no generation occurs
+                continue
             try:
                 result.append(float(item))
             except (ValueError, TypeError) as e:
