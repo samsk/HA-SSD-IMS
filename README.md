@@ -319,6 +319,7 @@ pytest tests/test_api_client.py::TestSsdImsApiClient::TestAuthentication -v
 2. **No Data Available**
    - Check if your POD has recent metering data
    - Verify the scan interval is appropriate (60-120 minutes)
+   - Enable debug logging (see Debug Logging section below)
    - Check Home Assistant logs for errors
    - Note: With 28 sensors per POD, initial data loading may take up to 2 minutes
 
@@ -327,9 +328,9 @@ pytest tests/test_api_client.py::TestSsdImsApiClient::TestAuthentication -v
    - Check if the SSD IMS portal is accessible
    - Review network firewall settings
 
-### Logs
+### Debug Logging
 
-Enable debug logging in Home Assistant:
+Enable comprehensive debug logging for the SSD IMS integration:
 
 ```yaml
 # configuration.yaml
@@ -338,6 +339,106 @@ logger:
   logs:
     custom_components.ssd_ims: debug
 ```
+
+**What debug logging shows:**
+- API authentication attempts and responses
+- POD discovery and data fetching operations  
+- Time period calculations and date ranges
+- Rate limiting delays and API call timing
+- Error details and retry attempts
+- Sensor updates and data processing
+
+**Viewing logs:**
+1. Go to **Settings** → **System** → **Logs**
+2. Filter by "ssd_ims" to see integration-specific entries
+3. Or check `home-assistant.log` file directly
+
+### Browser Console Debugging
+
+For advanced debugging of the SSD IMS portal API, you can inspect and test chart-data responses directly in your browser:
+
+#### Getting Chart Data via Console
+
+1. **Login to SSD IMS Portal:**
+   - Open https://ims.ssd.sk in your browser
+   - Login with your credentials
+   - Navigate to consumption/production data page
+
+2. **Open Developer Tools:**
+   - Press `F12` or right-click → "Inspect Element"
+   - Go to **Console** tab
+
+3. **Get Chart Data:**
+```javascript
+// Dynamic date calculation for last week's data
+const getLastWeekDates = () => {
+  const now = new Date();
+  const lastMonday = new Date(now);
+  lastMonday.setDate(now.getDate() - now.getDay() - 6); // Previous Monday
+  
+  const lastSunday = new Date(lastMonday);
+  lastSunday.setDate(lastMonday.getDate() + 6); // Previous Sunday
+  
+  return {
+    from: lastMonday.toISOString().split('T')[0],
+    to: lastSunday.toISOString().split('T')[0]
+  };
+};
+
+// Get last week's data
+const dates = getLastWeekDates();
+console.log(`Getting data from ${dates.from} to ${dates.to}`);
+
+fetch('/api/consumption-production/profile-data/chart-data', {
+  method: 'POST',
+  headers: {
+    'Content-Type': 'application/json',
+    'X-Requested-With': 'XMLHttpRequest'
+  },
+  body: JSON.stringify({
+    podId: "99XXX1234560000G", // Replace with your POD ID
+    dateFrom: dates.from,
+    dateTo: dates.to
+  })
+})
+.then(response => response.json())
+.then(data => {
+  console.log('Last week chart data:', data);
+  // Copy response to clipboard
+  navigator.clipboard.writeText(JSON.stringify(data, null, 2));
+  console.log('✅ Data copied to clipboard');
+})
+.catch(error => console.error('Error:', error));
+```
+
+#### Finding Your POD ID
+
+```javascript
+// Get all available PODs for your account
+fetch('/api/consumption-production/profile-data/get-points-of-delivery', {
+  method: 'GET',
+  headers: {
+    'X-Requested-With': 'XMLHttpRequest'
+  }
+})
+.then(response => response.json())
+.then(pods => {
+  console.log('Available PODs:');
+  pods.forEach(pod => {
+    console.log(`- ${pod.id}: ${pod.name || 'No name'}`);
+  });
+})
+.catch(error => console.error('Error:', error));
+```
+
+**Tips for Console Debugging:**
+- Ensure you're logged into the portal before running scripts
+- Check Network tab to see actual API calls made by the portal
+- Use `JSON.stringify(data, null, 2)` for pretty-printed output
+- Copy responses to external tools for analysis
+- Monitor rate limiting by spacing requests apart
+
+
 
 ## Contributing
 
@@ -350,7 +451,7 @@ logger:
 
 ## License
 
-This project is licensed under the MIT License - see the LICENSE file for details.
+This project is licensed under the AGPLv3 License - see the LICENSE file for details.
 
 ## Support
 
@@ -362,6 +463,14 @@ For issues and questions:
 4. Provide detailed information about your setup
 
 ## Changelog
+
+### Version 1.1.1
+- **Enhanced Error Messages**: Dramatically improved Pydantic validation error messages with detailed context
+- **Better Debugging**: Added comprehensive data analysis for validation failures showing exact problematic values
+- **Smart Error Detection**: Automatic identification of None values, wrong types, and data corruption
+- **Contextual Logging**: Enhanced logging shows data structure overview and field-by-field analysis
+- **Debug Documentation**: Added browser console debugging section with dynamic date selection and data anonymization
+- **Developer Experience**: Validation errors now show exact field names, indices, and surrounding data context
 
 ### Version 1.1.0
 - **Callback-Based Time Periods**: Completely refactored time period system with configurable callbacks

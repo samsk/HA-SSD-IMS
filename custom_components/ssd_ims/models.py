@@ -3,7 +3,7 @@ import re
 from datetime import datetime
 from typing import Any, Dict, List, Optional
 
-from pydantic import BaseModel, Field
+from pydantic import BaseModel, Field, field_validator, ValidationInfo
 
 
 class UserProfile(BaseModel):
@@ -127,6 +127,56 @@ class ChartData(BaseModel):
         alias="sumIdleConsumption", default=0.0
     )
     sum_idle_supply: Optional[float] = Field(alias="sumIdleSupply", default=0.0)
+
+    @field_validator('actual_consumption', 'actual_supply', 'idle_consumption', 'idle_supply', mode='before')
+    @classmethod
+    def validate_float_lists(cls, v: Any, info: ValidationInfo) -> List[float]:
+        """Validate float lists with enhanced error messages."""
+        if not isinstance(v, list):
+            # Handle single value case
+            if v is None:
+                return []
+            try:
+                return [float(v)]
+            except (ValueError, TypeError) as exc:
+                raise ValueError(f"Field '{info.field_name}': Expected list or numeric value, got {type(v).__name__}: {v}") from exc
+        
+        # Process list values
+        result = []
+        for i, item in enumerate(v):
+            if item is None:
+                raise ValueError(
+                    f"Field '{info.field_name}' at index {i}: "
+                    f"Found None value. Raw data at position {i}: {item}. "
+                    f"Full list preview: {v[:min(10, len(v))]}{'...' if len(v) > 10 else ''}"
+                )
+            try:
+                result.append(float(item))
+            except (ValueError, TypeError) as e:
+                raise ValueError(
+                    f"Field '{info.field_name}' at index {i}: "
+                    f"Cannot convert '{item}' (type: {type(item).__name__}) to float. "
+                    f"Raw data at position {i}: {repr(item)}. "
+                    f"Context around position {i}: {v[max(0, i-2):i+3]}. "
+                    f"Original error: {str(e)}"
+                ) from e
+        
+        return result
+
+    @field_validator('sum_actual_consumption', 'sum_actual_supply', 'sum_idle_consumption', 'sum_idle_supply', mode='before')
+    @classmethod
+    def validate_sum_fields(cls, v: Any, info: ValidationInfo) -> float:
+        """Validate sum fields with enhanced error messages."""
+        if v is None:
+            return 0.0
+        
+        try:
+            return float(v)
+        except (ValueError, TypeError) as e:
+            raise ValueError(
+                f"Field '{info.field_name}': Cannot convert '{v}' (type: {type(v).__name__}) to float. "
+                f"Raw value: {repr(v)}. Original error: {str(e)}"
+            ) from e
 
 
 class AggregatedData(BaseModel):

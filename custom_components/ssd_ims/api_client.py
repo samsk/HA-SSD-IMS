@@ -1,15 +1,61 @@
 """API client for SSD IMS integration."""
 import logging
 from datetime import datetime
-from typing import Any, List, Optional
+from typing import Any, Dict, List, Optional
 
 from aiohttp import ClientError, ClientSession, ClientTimeout
+from pydantic import ValidationError
 
 from .const import API_CHART, API_DATA, API_LOGIN, API_PODS
 from .models import (AuthResponse, ChartData, MeteringData,
                      MeteringDataResponse, PointOfDelivery)
 
 _LOGGER = logging.getLogger(__name__)
+
+
+def _log_data_sample(data: Dict[str, Any], field_name: str, max_sample_size: int = 20) -> str:
+    """Create a debug-friendly sample of problematic data."""
+    if field_name not in data:
+        return f"Field '{field_name}' not found in data"
+    
+    field_data = data[field_name]
+    if not isinstance(field_data, list):
+        return f"Field '{field_name}' is not a list: {type(field_data).__name__} = {repr(field_data)}"
+    
+    total_len = len(field_data)
+    if total_len == 0:
+        return f"Field '{field_name}' is empty list"
+    
+    # Find problematic entries
+    problems = []
+    for i, val in enumerate(field_data):
+        if val is None or (isinstance(val, str) and val.strip() == ""):
+            problems.append(i)
+        elif not isinstance(val, (int, float, str)):
+            problems.append(i)
+    
+    sample_info = f"length={total_len}"
+    if problems:
+        sample_info += f", problems_at={problems[:10]}"
+        if len(problems) > 10:
+            sample_info += f"+{len(problems)-10}more"
+    
+    # Show a small sample around problematic areas
+    if problems:
+        sample_ranges = []
+        for prob_idx in problems[:3]:  # Show first 3 problem areas
+            start = max(0, prob_idx - 2)
+            end = min(total_len, prob_idx + 3)
+            sample_ranges.append(f"[{start}:{end}]={field_data[start:end]}")
+        sample_info += f", samples={'; '.join(sample_ranges)}"
+    else:
+        # Show beginning sample if no obvious problems
+        sample_size = min(max_sample_size, total_len)
+        sample_info += f", sample={field_data[:sample_size]}"
+        if total_len > sample_size:
+            sample_info += "..."
+    
+    return sample_info
 
 
 class SsdImsApiClient:
@@ -301,14 +347,35 @@ class SsdImsApiClient:
                 # Return empty chart data
                 return ChartData()
 
-            chart_data = ChartData(**data)
-            _LOGGER.debug(
-                "Retrieved chart data for POD %s, period %s to %s",
-                pod_id,
-                from_date,
-                to_date,
-            )
-            return chart_data
+            # Enhanced validation with detailed error context
+            try:
+                chart_data = ChartData(**data)
+                _LOGGER.debug(
+                    "Retrieved chart data for POD %s, period %s to %s",
+                    pod_id,
+                    from_date,
+                    to_date,
+                )
+                return chart_data
+            except ValidationError as e:
+                _LOGGER.error(
+                    "Chart data validation failed for POD %s (%s to %s). "
+                    "Raw API response structure: %s. "
+                    "Validation errors: %s",
+                    pod_id,
+                    from_date,
+                    to_date,
+                    {k: f"{type(v).__name__}[{len(v) if isinstance(v, list) else 'scalar'}]" 
+                     for k, v in data.items() if k in ['meteringDatetime', 'actualConsumption', 
+                                                       'actualSupply', 'idleConsumption', 'idleSupply']},
+                    str(e)
+                )
+                # Log detailed information about problematic data
+                _LOGGER.error("Raw chart data field analysis:")
+                for field in ['actualConsumption', 'actualSupply', 'idleConsumption', 'idleSupply']:
+                    sample_info = _log_data_sample(data, field)
+                    _LOGGER.error("  %s: %s", field, sample_info)
+                raise Exception(f"Chart data validation failed: {str(e)}") from e
 
         except ClientError as e:
             _LOGGER.error("Network error getting chart data: %s", e)
