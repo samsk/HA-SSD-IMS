@@ -370,62 +370,169 @@ For advanced debugging of the SSD IMS portal API, you can inspect and test chart
 
 3. **Get Chart Data:**
 ```javascript
-// Dynamic date calculation for last week's data
-const getLastWeekDates = () => {
-  const now = new Date();
-  const lastMonday = new Date(now);
-  lastMonday.setDate(now.getDate() - now.getDay() - 6); // Previous Monday
-  
-  const lastSunday = new Date(lastMonday);
-  lastSunday.setDate(lastMonday.getDate() + 6); // Previous Sunday
-  
-  return {
-    from: lastMonday.toISOString().split('T')[0],
-    to: lastSunday.toISOString().split('T')[0]
-  };
-};
+// ⚠️ EDIT THIS: Replace with your POD ID (stable 16-20 char identifier)
+var TARGET_POD_ID = "99XXX1234560000G";
 
-// Get last week's data
-const dates = getLastWeekDates();
-console.log(`Getting data from ${dates.from} to ${dates.to}`);
-
-fetch('/api/consumption-production/profile-data/chart-data', {
-  method: 'POST',
-  headers: {
-    'Content-Type': 'application/json',
-    'X-Requested-With': 'XMLHttpRequest'
-  },
-  body: JSON.stringify({
-    podId: "99XXX1234560000G", // Replace with your POD ID
-    dateFrom: dates.from,
-    dateTo: dates.to
+// Dynamic yesterday calculation with automatic session POD lookup
+(() => {
+  var now = new Date();
+  var yesterday = new Date(now);
+  yesterday.setDate(now.getDate() - 1);
+  
+  var dateFrom = yesterday.toISOString().split('T')[0];
+  var dateTo = yesterday.toISOString().split('T')[0];
+  
+  console.log(`Getting yesterday's data: ${dateFrom} for POD: ${TARGET_POD_ID}`);
+  
+  // First get POD session data
+  fetch('/api/consumption-production/profile-data/get-points-of-delivery', {
+    method: 'GET',
+    headers: { 'X-Requested-With': 'XMLHttpRequest' }
   })
+  .then(response => {
+    if (response.status === 401) {
+      throw new Error('❌ Not logged in - please login to SSD IMS portal first');
+    }
+    if (!response.ok) {
+      throw new Error(`❌ HTTP ${response.status}: ${response.statusText}`);
+    }
+    return response.json();
+  })
+  .then(pods => {
+    // Find our target POD in the session data
+    var targetPod = pods.find(pod => pod.text.includes(TARGET_POD_ID));
+    if (!targetPod) {
+      throw new Error(`❌ POD ${TARGET_POD_ID} not found. Available: ${pods.map(p => p.text).join(', ')}`);
+    }
+    
+    console.log(`✅ Found POD session data: ${targetPod.text} (Session ID: ${targetPod.value})`);
+    
+    // Now get chart data with session POD ID
+    return fetch('/api/consumption-production/profile-data/chart-data', {
+      method: 'POST',
+      headers: {
+        'Content-Type': 'application/json',
+        'X-Requested-With': 'XMLHttpRequest'
+      },
+      body: JSON.stringify({
+        pointOfDeliveryId: targetPod.value,
+        validFromDate: dateFrom + "T00:00:00",
+        validToDate: dateTo + "T23:59:59",
+        pointOfDeliveryText: targetPod.text
+      })
+    });
+  })
+  .then(response => {
+    if (response.status === 401) {
+      throw new Error('❌ Not logged in - please login to SSD IMS portal first');
+    }
+    if (!response.ok) {
+      throw new Error(`❌ HTTP ${response.status}: ${response.statusText}`);
+    }
+    return response.json();
+  })
+  .then(data => {
+    console.log('Yesterday chart data:', data);
+    var jsonString = JSON.stringify(data, null, 2);
+    navigator.clipboard.writeText(jsonString)
+      .then(() => console.log('✅ Data copied to clipboard'))
+      .catch(err => {
+        console.warn('❌ Clipboard failed:', err.message);
+        console.log('📋 Chart data (copy manually):');
+        console.log(jsonString);
+      });
+  })
+  .catch(error => console.error('Error:', error));
+})();
+```
+
+**Alternative Simple Approach (if you prefer):**
+```javascript
+// ⚠️ EDIT THESE: Replace with your values
+var TARGET_POD_ID = "99XXX1234560000G";
+var START_DATE = "2024-01-15";
+var END_DATE = "2024-01-21";
+
+// Simple version with automatic session POD lookup
+fetch('/api/consumption-production/profile-data/get-points-of-delivery', {
+  method: 'GET',
+  headers: { 'X-Requested-With': 'XMLHttpRequest' }
 })
-.then(response => response.json())
+.then(response => {
+  if (response.status === 401) {
+    throw new Error('❌ Not logged in - please login to SSD IMS portal first');
+  }
+  if (!response.ok) {
+    throw new Error(`❌ HTTP ${response.status}: ${response.statusText}`);
+  }
+  return response.json();
+})
+.then(pods => {
+  var targetPod = pods.find(pod => pod.text.includes(TARGET_POD_ID));
+  if (!targetPod) {
+    throw new Error(`❌ POD ${TARGET_POD_ID} not found. Available: ${pods.map(p => p.text).join(', ')}`);
+  }
+  
+  return fetch('/api/consumption-production/profile-data/chart-data', {
+    method: 'POST',
+    headers: {
+      'Content-Type': 'application/json',
+      'X-Requested-With': 'XMLHttpRequest'
+    },
+    body: JSON.stringify({
+      pointOfDeliveryId: targetPod.value,
+      validFromDate: START_DATE + "T00:00:00",
+      validToDate: END_DATE + "T23:59:59",
+      pointOfDeliveryText: targetPod.text
+    })
+  });
+})
+.then(response => {
+  if (response.status === 401) {
+    throw new Error('❌ Not logged in - please login to SSD IMS portal first');
+  }
+  if (!response.ok) {
+    throw new Error(`❌ HTTP ${response.status}: ${response.statusText}`);
+  }
+  return response.json();
+})
 .then(data => {
-  console.log('Last week chart data:', data);
-  // Copy response to clipboard
-  navigator.clipboard.writeText(JSON.stringify(data, null, 2));
-  console.log('✅ Data copied to clipboard');
+  console.log('Chart data:', data);
+  navigator.clipboard.writeText(JSON.stringify(data, null, 2))
+    .then(() => console.log('✅ Copied to clipboard'))
+    .catch(() => console.log('📋 Copy failed, data printed above'));
 })
 .catch(error => console.error('Error:', error));
 ```
 
-#### Finding Your POD ID
+#### Finding Your POD ID and Session Data
 
 ```javascript
-// Get all available PODs for your account
+// Get all available PODs with session data needed for chart-data requests
 fetch('/api/consumption-production/profile-data/get-points-of-delivery', {
   method: 'GET',
   headers: {
     'X-Requested-With': 'XMLHttpRequest'
   }
 })
-.then(response => response.json())
+.then(response => {
+  if (response.status === 401) {
+    throw new Error('❌ Not logged in - please login to SSD IMS portal first');
+  }
+  if (!response.ok) {
+    throw new Error(`❌ HTTP ${response.status}: ${response.statusText}`);
+  }
+  return response.json();
+})
 .then(pods => {
-  console.log('Available PODs:');
+  console.log('Available PODs with session data:');
   pods.forEach(pod => {
-    console.log(`- ${pod.id}: ${pod.name || 'No name'}`);
+    console.log(`POD: ${pod.text}`);
+    console.log(`  - Session ID: ${pod.value}`);
+    console.log(`  - Use in chart-data requests:`);
+    console.log(`    pointOfDeliveryId: "${pod.value}"`);
+    console.log(`    pointOfDeliveryText: "${pod.text}"`);
+    console.log('---');
   });
 })
 .catch(error => console.error('Error:', error));
