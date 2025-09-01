@@ -1,4 +1,5 @@
 """API client for SSD IMS integration."""
+import asyncio
 import logging
 from datetime import datetime
 from typing import Any, Dict, List, Optional
@@ -66,7 +67,7 @@ class SsdImsApiClient:
         self._session = session
         self._authenticated = False
         self._session_token: Optional[str] = None
-        self._timeout = ClientTimeout(total=30)
+        self._timeout = ClientTimeout(total=60)  # Increase timeout for slow API
         self._username: Optional[str] = None
         self._password: Optional[str] = None
 
@@ -126,11 +127,16 @@ class SsdImsApiClient:
             return None
 
     def _is_session_expired(self, response) -> bool:
-        """Check if session has expired by examining response content type."""
+        """Check if session has expired by examining response content type and status."""
         try:
+            # Check for 401 unauthorized status
+            if response.status == 401:
+                _LOGGER.warning("Session expired - 401 unauthorized")
+                return True
+            
             content_type = response.headers.get("content-type", "").lower()
             # Check if response is HTML (session expired) instead of JSON
-            if "text/html" in content_type:
+            if "text/html" in content_type and response.status != 200:
                 _LOGGER.warning(
                     "Session expired - received HTML response instead of JSON"
                 )
@@ -152,12 +158,40 @@ class SsdImsApiClient:
 
         return await self.authenticate(self._username, self._password)
 
+    async def _retry_request_with_backoff(
+        self, method: str, url: str, max_retries: int = 3, **kwargs
+    ) -> Any:
+        """Retry request with exponential backoff for network issues."""
+        for attempt in range(max_retries):
+            try:
+                return await self._make_authenticated_request(method, url, **kwargs)
+            except ClientError as e:
+                if attempt == max_retries - 1:
+                    raise
+                
+                wait_time = 2 ** attempt  # exponential backoff: 1s, 2s, 4s
+                _LOGGER.warning(
+                    "Network error on attempt %d/%d for %s: %s. Retrying in %ds...",
+                    attempt + 1, max_retries, url, e, wait_time
+                )
+                await asyncio.sleep(wait_time)
+            except Exception as e:
+                # Don't retry non-network errors
+                raise
+
     async def _make_authenticated_request(
         self, method: str, url: str, **kwargs
     ) -> Any:
         """Make an authenticated request with automatic re-authentication on session expiry."""
         if not self._authenticated:
             raise Exception("Not authenticated")
+
+        # Add required headers for SSD IMS API compatibility
+        headers = kwargs.get('headers', {})
+        headers['X-Requested-With'] = 'XMLHttpRequest'
+        # Add accept header to ensure JSON response
+        headers['Accept'] = 'application/json, text/plain, */*'
+        kwargs['headers'] = headers
 
         try:
             async with self._session.request(
@@ -186,6 +220,15 @@ class SsdImsApiClient:
 
                 if response.status == 200:
                     return await response.json()
+                elif response.status == 401:
+                    # Session expired - will be handled by session check above
+                    raise Exception("Authentication required")
+                elif response.status == 403:
+                    raise Exception("Access forbidden - check permissions")
+                elif response.status == 404:
+                    raise Exception("API endpoint not found")
+                elif response.status == 500:
+                    raise Exception("Server error - try again later")
                 else:
                     raise Exception(f"API error: {response.status}")
 
@@ -202,7 +245,9 @@ class SsdImsApiClient:
             raise Exception("Not authenticated")
 
         try:
-            data = await self._make_authenticated_request("GET", API_PODS)
+            _LOGGER.debug("Fetching points of delivery from API")
+            data = await self._retry_request_with_backoff("GET", API_PODS)
+            _LOGGER.debug("POD API response type: %s, length: %s", type(data), len(data) if isinstance(data, list) else "N/A")
             pods = [PointOfDelivery(**pod) for pod in data]
             _LOGGER.debug("Retrieved %d points of delivery", len(pods))
             return pods
@@ -255,7 +300,7 @@ class SsdImsApiClient:
                 "isExport": False,
             }
 
-            data = await self._make_authenticated_request(
+            data = await self._retry_request_with_backoff(
                 "POST", API_DATA, json=payload
             )
             response_model = MeteringDataResponse(**data)
@@ -323,7 +368,7 @@ class SsdImsApiClient:
                 "pointOfDeliveryText": pod_text,
             }
 
-            data = await self._make_authenticated_request(
+            data = await self._retry_request_with_backoff(
                 "POST", API_CHART, json=payload
             )
             _LOGGER.debug(

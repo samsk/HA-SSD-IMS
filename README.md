@@ -571,6 +571,16 @@ For issues and questions:
 
 ## Changelog
 
+### Version 1.1.2
+- **Fixed Data Fetching Issues**: Added missing `X-Requested-With: XMLHttpRequest` header required by SSD IMS API
+- **Enhanced Request Headers**: Added proper `Accept` header for JSON responses
+- **Improved Timeout Handling**: Increased API timeout from 30s to 60s for slow responses
+- **Robust Retry Mechanism**: Added exponential backoff retry (1s, 2s, 4s) for network failures
+- **Better Session Detection**: Enhanced authentication failure detection with 401 status code handling
+- **Detailed Error Messages**: Specific error handling for 401, 403, 404, 500 HTTP status codes
+- **Enhanced Debugging**: Added comprehensive logging for API responses and data analysis
+- **Network Resilience**: Separate handling for network errors vs authentication failures
+
 ### Version 1.1.1
 - **Enhanced Error Messages**: Dramatically improved Pydantic validation error messages with detailed context
 - **Better Debugging**: Added comprehensive data analysis for validation failures showing exact problematic values
