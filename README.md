@@ -571,6 +571,12 @@ For issues and questions:
 
 ## Changelog
 
+### Version 1.2.0
+- **Slovak Translations**: Added complete Slovak (SK) translation support for the configuration flow
+- **Enhanced Localization**: Integration now fully supports Slovak language interface
+- **Configurable Sensors**: Added options to enable/disable supply sensors and idle/reactive power sensors during setup
+- **Flexible Sensor Management**: Users can now customize which sensor types to create (consumption always enabled, supply and idle sensors optional)
+
 ### Version 1.1.2
 - **Fixed Data Fetching Issues**: Added missing `X-Requested-With: XMLHttpRequest` header required by SSD IMS API
 - **Enhanced Request Headers**: Added proper `Accept` header for JSON responses
