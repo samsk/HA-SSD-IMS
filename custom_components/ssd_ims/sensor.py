@@ -11,11 +11,13 @@ from homeassistant.core import HomeAssistant
 from homeassistant.helpers.entity_platform import AddEntitiesCallback
 from homeassistant.helpers.typing import StateType
 
-from .const import (CONF_POD_NAME_MAPPING, CONF_POINT_OF_DELIVERY,
+from .const import (CONF_ENABLE_IDLE_SENSORS, CONF_ENABLE_SUPPLY_SENSORS,
+                    CONF_POD_NAME_MAPPING, CONF_POINT_OF_DELIVERY,
+                    DEFAULT_ENABLE_IDLE_SENSORS, DEFAULT_ENABLE_SUPPLY_SENSORS,
                     DEFAULT_POINT_OF_DELIVERY, DOMAIN,
                     SENSOR_TYPE_ACTUAL_CONSUMPTION, SENSOR_TYPE_ACTUAL_SUPPLY, 
                     SENSOR_TYPE_IDLE_CONSUMPTION, SENSOR_TYPE_IDLE_SUPPLY, 
-                    SENSOR_TYPES, TIME_PERIODS, TIME_PERIODS_CONFIG)
+                    TIME_PERIODS, TIME_PERIODS_CONFIG)
 from .coordinator import SsdImsDataCoordinator
 
 _LOGGER = logging.getLogger(__name__)
@@ -32,6 +34,28 @@ async def async_setup_entry(
     # Get POD configuration - now using stable pod_ids instead of pod_texts
     pod_ids = config_entry.data.get(CONF_POINT_OF_DELIVERY, DEFAULT_POINT_OF_DELIVERY)
     pod_name_mapping = config_entry.data.get(CONF_POD_NAME_MAPPING, {})
+    
+    # Get sensor configuration options
+    enable_supply_sensors = config_entry.data.get(
+        CONF_ENABLE_SUPPLY_SENSORS, DEFAULT_ENABLE_SUPPLY_SENSORS
+    )
+    enable_idle_sensors = config_entry.data.get(
+        CONF_ENABLE_IDLE_SENSORS, DEFAULT_ENABLE_IDLE_SENSORS
+    )
+
+    # Create list of enabled sensor types
+    enabled_sensor_types = [SENSOR_TYPE_ACTUAL_CONSUMPTION]  # Always enabled
+    
+    if enable_supply_sensors:
+        enabled_sensor_types.append(SENSOR_TYPE_ACTUAL_SUPPLY)
+    
+    if enable_idle_sensors:
+        enabled_sensor_types.extend([
+            SENSOR_TYPE_IDLE_CONSUMPTION,
+            SENSOR_TYPE_IDLE_SUPPLY,
+        ])
+
+    _LOGGER.debug("Enabled sensor types: %s", enabled_sensor_types)
 
     # Create sensors for each POD
     sensors = []
@@ -45,8 +69,8 @@ async def async_setup_entry(
         # Sanitize friendly name for use in sensor names
         friendly_name = _sanitize_name(friendly_name)
 
-        # Create sensors for all combinations of sensor types and time periods
-        for sensor_type in SENSOR_TYPES:
+        # Create sensors for enabled sensor types and time periods
+        for sensor_type in enabled_sensor_types:
             for period in TIME_PERIODS:
                 sensors.append(
                     SsdImsSensor(

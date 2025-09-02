@@ -13,9 +13,11 @@ from homeassistant.exceptions import HomeAssistantError
 from homeassistant.helpers import config_validation as cv
 
 from .api_client import SsdImsApiClient
-from .const import (CONF_POD_NAME_MAPPING, CONF_POINT_OF_DELIVERY,
-                    CONF_SCAN_INTERVAL, DEFAULT_SCAN_INTERVAL, DOMAIN, NAME,
-                    POD_NAME_MAX_LENGTH, POD_NAME_PATTERN,
+from .const import (CONF_ENABLE_IDLE_SENSORS, CONF_ENABLE_SUPPLY_SENSORS,
+                    CONF_POD_NAME_MAPPING, CONF_POINT_OF_DELIVERY,
+                    CONF_SCAN_INTERVAL, DEFAULT_ENABLE_IDLE_SENSORS,
+                    DEFAULT_ENABLE_SUPPLY_SENSORS, DEFAULT_SCAN_INTERVAL,
+                    DOMAIN, NAME, POD_NAME_MAX_LENGTH, POD_NAME_PATTERN,
                     SCAN_INTERVAL_OPTIONS)
 from .models import PointOfDelivery
 
@@ -35,6 +37,8 @@ class SsdImsConfigFlow(config_entries.ConfigFlow, domain=DOMAIN):
         self._pods: Optional[List[PointOfDelivery]] = None
         self._selected_pods: Optional[List[str]] = None
         self._pod_name_mapping: Optional[Dict[str, str]] = None
+        self._enable_supply_sensors: Optional[bool] = None
+        self._enable_idle_sensors: Optional[bool] = None
 
     async def async_step_user(
         self, user_input: Optional[Dict[str, Any]] = None
@@ -151,19 +155,7 @@ class SsdImsConfigFlow(config_entries.ConfigFlow, domain=DOMAIN):
 
             if not errors:
                 self._pod_name_mapping = pod_name_mapping
-                # Create config entry directly
-                config_data = {
-                    CONF_USERNAME: self._username,
-                    CONF_PASSWORD: self._password,
-                    CONF_SCAN_INTERVAL: self._scan_interval,
-                    CONF_POINT_OF_DELIVERY: self._selected_pods,
-                    CONF_POD_NAME_MAPPING: self._pod_name_mapping,
-                }
-
-                return self.async_create_entry(
-                    title=f"{NAME} ({self._username})",
-                    data=config_data,
-                )
+                return await self.async_step_sensor_options()
 
         # Create POD naming form using stable pod.id
         schema_fields = {}
@@ -190,21 +182,64 @@ class SsdImsConfigFlow(config_entries.ConfigFlow, domain=DOMAIN):
                 info_lines.append(f"• {pod.text} → {pod_id}")
         return "\n".join(info_lines)
 
+    async def async_step_sensor_options(
+        self, user_input: Optional[Dict[str, Any]] = None
+    ) -> FlowResult:
+        """Handle sensor options configuration step."""
+        errors = {}
+
+        if user_input is not None:
+            self._enable_supply_sensors = user_input.get(
+                CONF_ENABLE_SUPPLY_SENSORS, DEFAULT_ENABLE_SUPPLY_SENSORS
+            )
+            self._enable_idle_sensors = user_input.get(
+                CONF_ENABLE_IDLE_SENSORS, DEFAULT_ENABLE_IDLE_SENSORS
+            )
+
+            # Create config entry
+            config_data = {
+                CONF_USERNAME: self._username,
+                CONF_PASSWORD: self._password,
+                CONF_SCAN_INTERVAL: self._scan_interval,
+                CONF_POINT_OF_DELIVERY: self._selected_pods,
+                CONF_POD_NAME_MAPPING: self._pod_name_mapping,
+                CONF_ENABLE_SUPPLY_SENSORS: self._enable_supply_sensors,
+                CONF_ENABLE_IDLE_SENSORS: self._enable_idle_sensors,
+            }
+
+            return self.async_create_entry(
+                title=f"{NAME} ({self._username})",
+                data=config_data,
+            )
+
+        return self.async_show_form(
+            step_id="sensor_options",
+            data_schema=vol.Schema(
+                {
+                    vol.Optional(
+                        CONF_ENABLE_SUPPLY_SENSORS,
+                        default=DEFAULT_ENABLE_SUPPLY_SENSORS,
+                    ): bool,
+                    vol.Optional(
+                        CONF_ENABLE_IDLE_SENSORS,
+                        default=DEFAULT_ENABLE_IDLE_SENSORS,
+                    ): bool,
+                }
+            ),
+            errors=errors,
+        )
+
     @staticmethod
     @callback
     def async_get_options_flow(
         config_entry: config_entries.ConfigEntry,
     ) -> config_entries.OptionsFlow:
         """Get options flow for this handler."""
-        return SsdImsOptionsFlow(config_entry)
+        return SsdImsOptionsFlow()
 
 
 class SsdImsOptionsFlow(config_entries.OptionsFlow):
     """Handle SSD IMS options flow."""
-
-    def __init__(self, config_entry: config_entries.ConfigEntry) -> None:
-        """Initialize options flow."""
-        self.config_entry = config_entry
 
     async def async_step_init(
         self, user_input: Optional[Dict[str, Any]] = None
@@ -216,10 +251,28 @@ class SsdImsOptionsFlow(config_entries.OptionsFlow):
             # Update config entry
             new_data = self.config_entry.data.copy()
             new_data[CONF_SCAN_INTERVAL] = user_input[CONF_SCAN_INTERVAL]
+            new_data[CONF_ENABLE_SUPPLY_SENSORS] = user_input.get(
+                CONF_ENABLE_SUPPLY_SENSORS,
+                self.config_entry.data.get(
+                    CONF_ENABLE_SUPPLY_SENSORS, DEFAULT_ENABLE_SUPPLY_SENSORS
+                ),
+            )
+            new_data[CONF_ENABLE_IDLE_SENSORS] = user_input.get(
+                CONF_ENABLE_IDLE_SENSORS,
+                self.config_entry.data.get(
+                    CONF_ENABLE_IDLE_SENSORS, DEFAULT_ENABLE_IDLE_SENSORS
+                ),
+            )
 
+            # Update config entry
             self.hass.config_entries.async_update_entry(
                 self.config_entry, data=new_data
             )
+
+            # Update coordinator configuration and trigger refresh if needed
+            from .coordinator import SsdImsDataCoordinator
+            coordinator: SsdImsDataCoordinator = self.hass.data[DOMAIN][self.config_entry.entry_id]
+            await coordinator.update_config(new_data)
 
             return self.async_create_entry(title="", data={})
 
@@ -233,6 +286,18 @@ class SsdImsOptionsFlow(config_entries.OptionsFlow):
                             CONF_SCAN_INTERVAL, DEFAULT_SCAN_INTERVAL
                         ),
                     ): vol.In(SCAN_INTERVAL_OPTIONS),
+                    vol.Optional(
+                        CONF_ENABLE_SUPPLY_SENSORS,
+                        default=self.config_entry.data.get(
+                            CONF_ENABLE_SUPPLY_SENSORS, DEFAULT_ENABLE_SUPPLY_SENSORS
+                        ),
+                    ): bool,
+                    vol.Optional(
+                        CONF_ENABLE_IDLE_SENSORS,
+                        default=self.config_entry.data.get(
+                            CONF_ENABLE_IDLE_SENSORS, DEFAULT_ENABLE_IDLE_SENSORS
+                        ),
+                    ): bool,
                 }
             ),
             errors=errors,

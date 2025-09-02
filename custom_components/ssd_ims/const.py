@@ -14,13 +14,22 @@ CONF_POINT_OF_DELIVERY: Final = (
     "point_of_delivery"  # Now contains stable pod_ids instead of pod_texts
 )
 CONF_POD_NAME_MAPPING: Final = "pod_name_mapping"
+CONF_ENABLE_SUPPLY_SENSORS: Final = "enable_supply_sensors"
+CONF_ENABLE_IDLE_SENSORS: Final = "enable_idle_sensors"
 
 # Defaults
 DEFAULT_SCAN_INTERVAL: Final = 60
 DEFAULT_POINT_OF_DELIVERY: Final = []
+DEFAULT_ENABLE_SUPPLY_SENSORS: Final = True
+DEFAULT_ENABLE_IDLE_SENSORS: Final = False
 
 # Options
-SCAN_INTERVAL_OPTIONS: Final = [60, 120]  # minutes
+SCAN_INTERVAL_OPTIONS: Final = {
+    60: "1 hour",
+    120: "2 hours",
+    180: "3 hours",
+    240: "4 hours",
+}
 
 # API delay configuration - random between min and max
 API_DELAY_MIN: Final = 1  # minimum random delay in seconds

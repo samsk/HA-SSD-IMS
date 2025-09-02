@@ -12,11 +12,13 @@ from homeassistant.helpers.update_coordinator import (DataUpdateCoordinator,
                                                       UpdateFailed)
 
 from .api_client import SsdImsApiClient
-from .const import (API_DELAY_MAX, API_DELAY_MIN, CONF_POINT_OF_DELIVERY,
-                    DEFAULT_POINT_OF_DELIVERY, DEFAULT_SCAN_INTERVAL, DOMAIN,
-                    SENSOR_TYPE_ACTUAL_CONSUMPTION, SENSOR_TYPE_ACTUAL_SUPPLY,
-                    SENSOR_TYPE_IDLE_CONSUMPTION, SENSOR_TYPE_IDLE_SUPPLY,
-                    SENSOR_TYPES, TIME_PERIODS_CONFIG)
+from .const import (API_DELAY_MAX, API_DELAY_MIN, CONF_ENABLE_IDLE_SENSORS,
+                    CONF_ENABLE_SUPPLY_SENSORS, CONF_POINT_OF_DELIVERY,
+                    CONF_SCAN_INTERVAL, DEFAULT_ENABLE_IDLE_SENSORS,
+                    DEFAULT_ENABLE_SUPPLY_SENSORS, DEFAULT_POINT_OF_DELIVERY,
+                    DEFAULT_SCAN_INTERVAL, DOMAIN, SENSOR_TYPE_ACTUAL_CONSUMPTION,
+                    SENSOR_TYPE_ACTUAL_SUPPLY, SENSOR_TYPE_IDLE_CONSUMPTION,
+                    SENSOR_TYPE_IDLE_SUPPLY, TIME_PERIODS_CONFIG)
 from .models import ChartData, PointOfDelivery
 
 _LOGGER = logging.getLogger(__name__)
@@ -38,6 +40,39 @@ class SsdImsDataCoordinator(DataUpdateCoordinator):
         )
 
         super().__init__(hass, _LOGGER, name=DOMAIN, update_interval=scan_interval)
+
+    async def update_config(self, new_config: Dict[str, Any]) -> None:
+        """Update coordinator configuration and trigger data refresh."""
+        old_config = self.config.copy()
+        self.config.update(new_config)
+        
+        # Check if sensor configuration changed
+        sensor_config_changed = (
+            old_config.get(CONF_ENABLE_SUPPLY_SENSORS) != new_config.get(CONF_ENABLE_SUPPLY_SENSORS) or
+            old_config.get(CONF_ENABLE_IDLE_SENSORS) != new_config.get(CONF_ENABLE_IDLE_SENSORS)
+        )
+        
+        # Check if scan interval changed
+        scan_interval_changed = (
+            old_config.get(CONF_SCAN_INTERVAL) != new_config.get(CONF_SCAN_INTERVAL)
+        )
+        
+        # Update scan interval if changed
+        if scan_interval_changed:
+            new_scan_interval = new_config.get(CONF_SCAN_INTERVAL, DEFAULT_SCAN_INTERVAL)
+            self.update_interval = timedelta(minutes=new_scan_interval)
+            _LOGGER.info("Updated scan interval to %d minutes", new_scan_interval)
+        
+        # Trigger immediate data refresh if sensor configuration changed
+        if sensor_config_changed:
+            _LOGGER.info(
+                "Sensor configuration changed (supply: %s, idle: %s), triggering immediate data refresh",
+                new_config.get(CONF_ENABLE_SUPPLY_SENSORS),
+                new_config.get(CONF_ENABLE_IDLE_SENSORS)
+            )
+            await self.async_request_refresh()
+        else:
+            _LOGGER.debug("No sensor configuration changes detected")
 
     def _get_random_api_delay(self) -> float:
         """Get random API delay between configured min and max values."""
@@ -283,37 +318,63 @@ class SsdImsDataCoordinator(DataUpdateCoordinator):
         """Aggregate data by different time periods using configurable chart data."""
         aggregated = {}
         
+        # Get sensor configuration options
+        enable_supply_sensors = self.config.get(
+            CONF_ENABLE_SUPPLY_SENSORS, DEFAULT_ENABLE_SUPPLY_SENSORS
+        )
+        enable_idle_sensors = self.config.get(
+            CONF_ENABLE_IDLE_SENSORS, DEFAULT_ENABLE_IDLE_SENSORS
+        )
+
+        # Create list of enabled sensor types
+        enabled_sensor_types = [SENSOR_TYPE_ACTUAL_CONSUMPTION]  # Always enabled
+        
+        if enable_supply_sensors:
+            enabled_sensor_types.append(SENSOR_TYPE_ACTUAL_SUPPLY)
+        
+        if enable_idle_sensors:
+            enabled_sensor_types.extend([
+                SENSOR_TYPE_IDLE_CONSUMPTION,
+                SENSOR_TYPE_IDLE_SUPPLY,
+            ])
+        
         for period_key, chart_data in chart_data_by_period.items():
             period_name = TIME_PERIODS_CONFIG[period_key]["display_name"]
             aggregated[period_key] = {}
             
             if chart_data and hasattr(chart_data, "sum_actual_consumption"):
-                # Extract all sensor values for this period
-                aggregated[period_key][SENSOR_TYPE_ACTUAL_CONSUMPTION] = (
-                    chart_data.sum_actual_consumption or 0.0
-                )
-                aggregated[period_key][SENSOR_TYPE_ACTUAL_SUPPLY] = (
-                    chart_data.sum_actual_supply or 0.0
-                )
-                aggregated[period_key][SENSOR_TYPE_IDLE_CONSUMPTION] = (
-                    chart_data.sum_idle_consumption or 0.0
-                )
-                aggregated[period_key][SENSOR_TYPE_IDLE_SUPPLY] = (
-                    chart_data.sum_idle_supply or 0.0
-                )
+                # Extract only enabled sensor values for this period
+                if SENSOR_TYPE_ACTUAL_CONSUMPTION in enabled_sensor_types:
+                    aggregated[period_key][SENSOR_TYPE_ACTUAL_CONSUMPTION] = (
+                        chart_data.sum_actual_consumption or 0.0
+                    )
+                
+                if SENSOR_TYPE_ACTUAL_SUPPLY in enabled_sensor_types:
+                    aggregated[period_key][SENSOR_TYPE_ACTUAL_SUPPLY] = (
+                        chart_data.sum_actual_supply or 0.0
+                    )
+                
+                if SENSOR_TYPE_IDLE_CONSUMPTION in enabled_sensor_types:
+                    aggregated[period_key][SENSOR_TYPE_IDLE_CONSUMPTION] = (
+                        chart_data.sum_idle_consumption or 0.0
+                    )
+                
+                if SENSOR_TYPE_IDLE_SUPPLY in enabled_sensor_types:
+                    aggregated[period_key][SENSOR_TYPE_IDLE_SUPPLY] = (
+                        chart_data.sum_idle_supply or 0.0
+                    )
 
-                _LOGGER.debug(
-                    "%s chart data summaries: actual_consumption=%s, "
-                    "actual_supply=%s, idle_consumption=%s, idle_supply=%s",
-                    period_name,
-                    chart_data.sum_actual_consumption,
-                    chart_data.sum_actual_supply,
-                    chart_data.sum_idle_consumption,
-                    chart_data.sum_idle_supply,
-                )
+                # Debug log only for enabled sensors
+                debug_msg = f"{period_name} chart data summaries: actual_consumption={chart_data.sum_actual_consumption}"
+                if enable_supply_sensors:
+                    debug_msg += f", actual_supply={chart_data.sum_actual_supply}"
+                if enable_idle_sensors:
+                    debug_msg += f", idle_consumption={chart_data.sum_idle_consumption}, idle_supply={chart_data.sum_idle_supply}"
+                
+                _LOGGER.debug(debug_msg)
             else:
-                # Fallback: set all values to 0 if no chart data available
-                for sensor_type in SENSOR_TYPES:
+                # Fallback: set enabled sensor values to 0 if no chart data available
+                for sensor_type in enabled_sensor_types:
                     aggregated[period_key][sensor_type] = 0.0
                 _LOGGER.warning("No %s chart data available, setting %s values to 0", period_name, period_key)
 
