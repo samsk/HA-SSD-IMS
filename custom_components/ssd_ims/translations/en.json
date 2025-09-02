@@ -1,0 +1,59 @@
+{
+  "config": {
+    "step": {
+      "user": {
+        "title": "SSD IMS Configuration",
+        "description": "Enter your SSD IMS portal credentials",
+        "data": {
+          "username": "Username",
+          "password": "Password",
+          "scan_interval": "Update interval (minutes)"
+        }
+      },
+      "point_of_delivery": {
+        "title": "Select Points of Delivery",
+        "description": "Choose which Points of Delivery to monitor",
+        "data": {
+          "selected_pods": "Points of Delivery"
+        }
+      },
+      "pod_naming": {
+        "title": "Configure POD Names",
+        "description": "Set friendly names for your Points of Delivery\n\n{pod_info}",
+        "data": {}
+      },
+      "sensor_options": {
+        "title": "Sensor Configuration", 
+        "description": "Choose which sensor types to enable",
+        "data": {
+          "enable_supply_sensors": "Enable supply sensors",
+          "enable_idle_sensors": "Enable idle/reactive power sensors"
+        }
+      }
+    },
+    "error": {
+      "invalid_auth": "Invalid username or password",
+      "cannot_connect": "Cannot connect to SSD IMS portal",
+      "no_pods_selected": "Please select at least one Point of Delivery",
+      "invalid_format": "Name contains invalid characters. Use only letters, numbers, and underscores",
+      "too_long": "Name is too long (maximum 32 characters)",
+      "duplicate_name": "This name is already used for another POD"
+    },
+    "abort": {
+      "already_configured": "Integration is already configured"
+    }
+  },
+  "options": {
+    "step": {
+      "init": {
+        "title": "SSD IMS Options",
+        "description": "Update integration settings",
+        "data": {
+          "scan_interval": "Update interval (minutes)",
+          "enable_supply_sensors": "Enable supply sensors",
+          "enable_idle_sensors": "Enable idle/reactive power sensors"
+        }
+      }
+    }
+  }
+}

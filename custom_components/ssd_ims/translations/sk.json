@@ -1,0 +1,59 @@
+{
+  "config": {
+    "step": {
+      "user": {
+        "title": "Konfigurácia SSD IMS",
+        "description": "Zadajte prihlasovacie údaje do SSD IMS portálu",
+        "data": {
+          "username": "Používateľské meno",
+          "password": "Heslo",
+          "scan_interval": "Interval aktualizácie (minúty)"
+        }
+      },
+      "point_of_delivery": {
+        "title": "Vyberte odberné miesta",
+        "description": "Vyberte ktoré odberné miesta chcete monitorovať",
+        "data": {
+          "selected_pods": "Odberné miesta"
+        }
+      },
+      "pod_naming": {
+        "title": "Konfigurácia názvov OM",
+        "description": "Nastavte popisné názvy pre vaše odberné miesta\n\n{pod_info}",
+        "data": {}
+      },
+      "sensor_options": {
+        "title": "Konfigurácia senzorov", 
+        "description": "Vyberte ktoré typy senzorov chcete povoliť",
+        "data": {
+          "enable_supply_sensors": "Povoliť senzory dodávky",
+          "enable_idle_sensors": "Povoliť senzory jalového výkonu"
+        }
+      }
+    },
+    "error": {
+      "invalid_auth": "Neplatné používateľské meno alebo heslo",
+      "cannot_connect": "Nedá sa pripojiť k SSD IMS portálu",
+      "no_pods_selected": "Vyberte aspoň jedno odberné miesto",
+      "invalid_format": "Názov obsahuje neplatné znaky. Použite len písmená, čísla a podčiarkovníky",
+      "too_long": "Názov je príliš dlhý (maximálne 32 znakov)",
+      "duplicate_name": "Tento názov sa už používa pre iné OM"
+    },
+    "abort": {
+      "already_configured": "Integrácia je už nakonfigurovaná"
+    }
+  },
+  "options": {
+    "step": {
+      "init": {
+        "title": "Možnosti SSD IMS",
+        "description": "Aktualizovať nastavenia integrácie",
+        "data": {
+          "scan_interval": "Interval aktualizácie (minúty)",
+          "enable_supply_sensors": "Povoliť senzory dodávky",
+          "enable_idle_sensors": "Povoliť senzory jalového výkonu"
+        }
+      }
+    }
+  }
+}
