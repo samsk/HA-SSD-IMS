@@ -162,3 +162,59 @@ async def test_removing_entry_clears_its_reauth_issue(hass: HomeAssistant):
     await hass.config_entries.async_remove(entry.entry_id)
 
     assert ir.async_get(hass).async_get_issue(HOMEASSISTANT_DOMAIN, issue_id) is None
+
+
+def _session_rejecting_login():
+    """An aiohttp session stand-in whose login POST gets the portal's real
+    wrong-credentials response: HTTP 422 with an "error" body."""
+    response = MagicMock()
+    response.status = 422
+    response.json = AsyncMock(
+        return_value={
+            "error": {
+                "module": "AC",
+                "code": "0x0100000F",
+                "message": "Zadali ste nesprávne prihlasovacie meno alebo heslo.",
+            }
+        }
+    )
+    response.headers = {"content-type": "application/json"}
+    response.cookies = {}
+    session = MagicMock()
+    session.post.return_value.__aenter__ = AsyncMock(return_value=response)
+    session.post.return_value.__aexit__ = AsyncMock(return_value=None)
+    return session
+
+
+async def test_password_rejected_with_422_starts_reauth_flow(hass: HomeAssistant):
+    """Regression test for issue #25: after the user changed their password
+    on the portal, login got a 422 which was treated as a transient error —
+    setup retried forever (ConfigEntryNotReady) with the stale password and
+    Home Assistant never offered a way to enter the new one. Runs the real
+    API client (only the HTTP session is mocked) so the portal's actual
+    status code flows through the whole setup path."""
+    entry = MockConfigEntry(
+        domain=DOMAIN,
+        version=2,
+        unique_id="test_user",
+        data={
+            "username": "test_user",
+            "password": "old_pass",
+            CONF_POINT_OF_DELIVERY: [POD_ID],
+            CONF_POD_NAME_MAPPING: {POD_ID: "Home"},
+            CONF_HISTORY_DAYS: 1,
+        },
+    )
+    entry.add_to_hass(hass)
+
+    with patch(
+        "custom_components.ssd_ims.async_get_clientsession",
+        return_value=_session_rejecting_login(),
+    ):
+        assert not await hass.config_entries.async_setup(entry.entry_id)
+        await hass.async_block_till_done()
+
+    assert entry.state is ConfigEntryState.SETUP_ERROR
+    flows = hass.config_entries.flow.async_progress_by_handler(DOMAIN)
+    assert [flow["context"]["source"] for flow in flows] == ["reauth"]
+    assert flows[0]["context"]["entry_id"] == entry.entry_id

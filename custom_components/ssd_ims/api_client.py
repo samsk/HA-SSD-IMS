@@ -92,7 +92,8 @@ class SsdImsApiClient:
         """Authenticate with SSD IMS portal.
 
         Returns False only when the portal itself rejects the credentials
-        (401/403). Network errors, timeouts, and unexpected/invalid
+        (401/403/422 — the portal actually answers a wrong username or
+        password with 422, not 401). Network errors, timeouts, and unexpected/invalid
         responses are raised instead of being folded into False, so callers
         can tell "wrong password" apart from "couldn't reach the portal"
         (e.g. ConfigEntryAuthFailed vs. ConfigEntryNotReady).
@@ -110,8 +111,19 @@ class SsdImsApiClient:
                 _LOGGER.error("Authentication failed: %s", response.status)
                 return False
 
+            if response.status == 422:
+                # The portal rejects a wrong username/password with 422 and an
+                # {"error": {"code": ..., "message": ...}} body, and missing
+                # fields with 422 and a {"modelErrors": [...]} body — both
+                # mean the credentials we sent are unusable.
+                _LOGGER.error(
+                    "Authentication failed: 422 %s",
+                    await self._read_login_error(response),
+                )
+                return False
+
             if response.status != 200:
-                # 401/403 are already handled above; anything else reuses the
+                # 401/403/422 are already handled above; anything else reuses the
                 # same typed classification as authenticated requests (in
                 # particular, 5xx becomes SsdImsServerError instead of a
                 # generic "unexpected" RuntimeError — a 503 during the
@@ -134,6 +146,20 @@ class SsdImsApiClient:
 
             _LOGGER.info("Authentication successful for user: %s", username)
             return True
+
+    @staticmethod
+    async def _read_login_error(response) -> str:
+        """Best-effort summary of a rejected login's error body, for logging."""
+        try:
+            data = await response.json(content_type=None)
+        except Exception:
+            return "(unreadable response body)"
+        if isinstance(data, dict):
+            if isinstance(error := data.get("error"), dict):
+                return f"{error.get('code')}: {error.get('message')}"
+            if model_errors := data.get("modelErrors"):
+                return f"invalid request: {model_errors}"
+        return str(data)
 
     def _extract_session_token(self, response) -> str | None:
         """Extract SsdAccessToken from response cookies."""

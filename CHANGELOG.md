@@ -1,5 +1,10 @@
 # Changelog
 
+## Version 2.2.7
+
+- **Bug fix**: After changing the account password on the SSD IMS portal, the integration never asked for the new one — setup failed with `Cannot connect to SSD IMS: API error: 422 during login` and retried forever with the stale password (fixes #25). The portal rejects a wrong username/password with HTTP 422 (confirmed against the live login endpoint), but only 401/403 were recognised as rejected credentials, so the 422 was treated as a transient connection problem (`ConfigEntryNotReady`) instead of an authentication failure (`ConfigEntryAuthFailed`). A 422 on login is now treated as invalid credentials, which starts Home Assistant's reauthentication flow so the new password can be entered. The same fix makes a mistyped password during initial setup show "Invalid authentication" instead of "Cannot connect", and a password changed while Home Assistant is running now triggers reauth on the next session expiry instead of a generic error
+- **Internal**: Added tests covering the portal's real 422 responses (captured from the live login endpoint) through the API client, the config flow, and a full config-entry setup against real Home Assistant machinery
+
 ## Version 2.2.6
 
 - **Bug fix**: Stale `config_entry_reauth_ssd_ims_<entry_id>` repair issues could linger in Home Assistant's Repairs list indefinitely (fixes #23). Home Assistant core only clears that issue when a reauth *flow* for the entry is completed or aborted — it does neither when the entry is simply removed, nor when authentication starts succeeding again through some other path (e.g. a transient portal-side 401/403 that clears up by the next restart's automatic re-authentication, without the user ever opening the reauth flow). Both cases previously left the issue behind forever, one referencing a live, working entry and the other a dead entry_id after a delete/recreate. The integration now clears its own reauth repair issue itself whenever setup succeeds and when the config entry is removed
