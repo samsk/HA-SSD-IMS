@@ -90,6 +90,116 @@ class TestSsdImsApiClient:
                 assert result is False
                 assert api_client._authenticated is False
 
+        # Captured from the live portal (https://ims.ssd.sk/api/account/login)
+        # with deliberately non-existent credentials — it answers a wrong
+        # username/password with 422, never 401/403 (see issue #25).
+        WRONG_CREDENTIALS_422_BODY = {
+            "error": {
+                "module": "AC",
+                "code": "0x0100000F",
+                "message": "Zadali ste nesprávne prihlasovacie meno alebo heslo.",
+                "siId": "[00003;00031]-0000E812_3248FE14_F100E321",
+                "traceId": "0HNOQK1C8VI8U:000010E6",
+            }
+        }
+        # Same endpoint, empty username/password.
+        MISSING_FIELDS_422_BODY = {
+            "modelErrors": [
+                {
+                    "field": "Password",
+                    "messages": ["The Password field is required."],
+                },
+                {
+                    "field": "Username",
+                    "messages": ["The Username field is required."],
+                },
+            ]
+        }
+
+        @pytest.mark.parametrize(
+            "body",
+            [WRONG_CREDENTIALS_422_BODY, MISSING_FIELDS_422_BODY],
+            ids=["wrong_credentials", "missing_fields"],
+        )
+        async def test_422_during_login_is_invalid_credentials(
+            self, api_client, body, caplog
+        ):
+            """A 422 from the login endpoint is how the portal rejects bad
+            credentials. It must return False (so setup raises
+            ConfigEntryAuthFailed and the reauth flow starts), not raise a
+            generic RuntimeError (which setup treats as ConfigEntryNotReady
+            and retries forever with the stale password)."""
+            with patch.object(api_client._session, "post") as mock_post:
+                mock_response = AsyncMock()
+                mock_response.status = 422
+                mock_response.json = AsyncMock(return_value=body)
+                mock_response.headers = {"content-type": "application/json"}
+                mock_response.cookies = {}
+                mock_post.return_value.__aenter__.return_value = mock_response
+
+                result = await api_client.authenticate("test_user", "wrong")
+
+                assert result is False
+                assert api_client._authenticated is False
+
+            if "error" in body:
+                assert "0x0100000F" in caplog.text
+            else:
+                assert "invalid request" in caplog.text
+
+        async def test_422_with_unreadable_body_is_invalid_credentials(
+            self, api_client
+        ):
+            """The error body is only read for logging — a body that can't be
+            parsed must not turn a rejected login into an exception."""
+            with patch.object(api_client._session, "post") as mock_post:
+                mock_response = AsyncMock()
+                mock_response.status = 422
+                mock_response.json = AsyncMock(side_effect=ValueError("not json"))
+                mock_response.headers = {"content-type": "text/plain"}
+                mock_response.cookies = {}
+                mock_post.return_value.__aenter__.return_value = mock_response
+
+                result = await api_client.authenticate("test_user", "wrong")
+
+                assert result is False
+
+        async def test_422_on_session_reauth_raises_authentication_error(
+            self, api_client, mock_auth_response
+        ):
+            """If the password is changed on the portal while HA is running,
+            the transparent re-login after a session expiry gets a 422. That
+            must surface as SsdImsAuthenticationError (which the coordinator
+            maps to ConfigEntryAuthFailed), not a generic RuntimeError."""
+            from custom_components.ssd_ims.api_client import (
+                SsdImsAuthenticationError,
+            )
+
+            api_client._authenticated = True
+            api_client._username = "test_user"
+            api_client._password = "old_pass"
+
+            with (
+                patch.object(api_client._session, "request") as mock_request,
+                patch.object(api_client._session, "post") as mock_post,
+            ):
+                expired = AsyncMock()
+                expired.status = 401
+                expired.headers = {"content-type": "application/json"}
+                mock_request.return_value.__aenter__.return_value = expired
+
+                rejected = AsyncMock()
+                rejected.status = 422
+                rejected.json = AsyncMock(return_value=self.WRONG_CREDENTIALS_422_BODY)
+                rejected.headers = {"content-type": "application/json"}
+                rejected.cookies = {}
+                mock_post.return_value.__aenter__.return_value = rejected
+
+                with pytest.raises(
+                    SsdImsAuthenticationError, match="Re-authentication failed"
+                ):
+                    await api_client.get_points_of_delivery()
+
         async def test_server_error_during_login_raises_typed_server_error(
             self, api_client
         ):

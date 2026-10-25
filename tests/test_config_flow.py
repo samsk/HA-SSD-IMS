@@ -123,6 +123,44 @@ async def test_invalid_credentials_shows_error(hass: HomeAssistant):
     assert result["errors"] == {"base": "invalid_auth"}
 
 
+async def test_portal_422_login_shows_invalid_auth(hass: HomeAssistant):
+    """The portal rejects a wrong username/password with HTTP 422 (not
+    401/403). Uses the real API client with only the HTTP session mocked, so
+    a mistyped password shows "invalid_auth" rather than "cannot_connect"."""
+    response = MagicMock()
+    response.status = 422
+    response.json = AsyncMock(
+        return_value={
+            "error": {
+                "module": "AC",
+                "code": "0x0100000F",
+                "message": "Zadali ste nesprávne prihlasovacie meno alebo heslo.",
+            }
+        }
+    )
+    response.headers = {"content-type": "application/json"}
+    response.cookies = {}
+    session = MagicMock()
+    session.post.return_value.__aenter__ = AsyncMock(return_value=response)
+    session.post.return_value.__aexit__ = AsyncMock(return_value=None)
+
+    with patch(
+        "custom_components.ssd_ims.config_flow.async_get_clientsession",
+        return_value=session,
+    ):
+        result = await hass.config_entries.flow.async_init(
+            DOMAIN, context={"source": config_entries.SOURCE_USER}
+        )
+        result = await hass.config_entries.flow.async_configure(
+            result["flow_id"],
+            {"username": "test_user", "password": "wrong"},
+        )
+
+    assert result["type"] is FlowResultType.FORM
+    assert result["step_id"] == "user"
+    assert result["errors"] == {"base": "invalid_auth"}
+
+
 async def test_network_error_shows_cannot_connect(hass: HomeAssistant):
     client = MagicMock()
     client.authenticate = AsyncMock(side_effect=TimeoutError("timed out"))
