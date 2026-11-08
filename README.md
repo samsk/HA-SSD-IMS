@@ -1,5 +1,11 @@
 # Stredoslovenská distribučná (SSD IMS) pre Home Assistant
 
+[![Verzia](https://img.shields.io/github/v/release/baracudaz/ssd-ims?label=verzia)](https://github.com/baracudaz/ssd-ims/releases/latest)
+[![Marketplace](https://img.shields.io/badge/Marketplace-HACS-41BDF5?logo=homeassistantcommunitystore&logoColor=white)](#inštalácia)
+[![Testy](https://img.shields.io/github/actions/workflow/status/baracudaz/ssd-ims/lint.yml?branch=master&label=testy)](https://github.com/baracudaz/ssd-ims/actions/workflows/lint.yml)
+[![Validácia](https://img.shields.io/github/actions/workflow/status/baracudaz/ssd-ims/validate.yml?branch=master&label=valid%C3%A1cia)](https://github.com/baracudaz/ssd-ims/actions/workflows/validate.yml)
+[![Licencia](https://img.shields.io/github/license/baracudaz/ssd-ims?label=licencia)](LICENSE)
+
 *English: a Home Assistant integration for the SSD energy data portal (ims.ssd.sk). User documentation is in Slovak; developer documentation is in English in [DEVELOPMENT.md](DEVELOPMENT.md).*
 
 Integrácia sťahuje údaje o spotrebe a dodávke elektriny z Portálu energetických dát <https://ims.ssd.sk> a ukladá ich do Home Assistantu, kde ich zobrazí panel Energie — po hodinách, s históriou a voliteľne aj s nákladmi v eurách.
