@@ -1,7 +1,7 @@
 """Data models for SSD IMS integration."""
 
 import re
-from datetime import datetime
+from datetime import UTC, datetime
 from typing import Any
 
 from pydantic import BaseModel, Field, ValidationInfo, field_validator, model_validator
@@ -154,3 +154,72 @@ class ChartData(BaseModel):
                 f"Field '{info.field_name}': Cannot convert '{v}' (type: {type(v).__name__}) to float. "
                 f"Raw value: {repr(v)}. Original error: {str(e)}"
             ) from e
+
+
+# Columns requested from the registry-data grid endpoint, in order. The
+# portal only returns values for the columns listed in the request, as a
+# positional ``values`` array per row.
+REGISTRY_COLUMNS: tuple[str, ...] = (
+    "serialNumber",
+    "billingPeriodEndDatetime",
+    "actualConsumptionMax",
+    "actualConsumptionTotal",
+    "actualConsumptionTariff1",
+    "actualConsumptionTariff2",
+    "actualSupplyTotal",
+)
+
+
+class RegistryReading(BaseModel):
+    """One meter register reading (Registrové údaje).
+
+    Energy values are cumulative meter counters (OBIS 1.8.x / 2.8.0), not
+    per-period totals; ``max_demand`` (1.6.0) is the peak quarter-hour
+    demand of the period ending at ``reading_time``.
+    """
+
+    serial_number: str
+    reading_time: datetime
+    max_demand: float | None = None
+    consumption_total: float | None = None
+    consumption_tariff1: float | None = None
+    consumption_tariff2: float | None = None
+    supply_total: float | None = None
+
+    @classmethod
+    def from_row(cls, values: list[Any]) -> "RegistryReading":
+        """Build a reading from a positional row aligned with REGISTRY_COLUMNS."""
+        if len(values) < len(REGISTRY_COLUMNS):
+            raise ValueError(
+                f"Registry row has {len(values)} values, "
+                f"expected {len(REGISTRY_COLUMNS)}: {values!r}"
+            )
+        row = dict(zip(REGISTRY_COLUMNS, values, strict=False))
+        return cls(
+            serial_number=str(row["serialNumber"] or ""),
+            reading_time=row["billingPeriodEndDatetime"],
+            max_demand=row["actualConsumptionMax"],
+            consumption_total=row["actualConsumptionTotal"],
+            consumption_tariff1=row["actualConsumptionTariff1"],
+            consumption_tariff2=row["actualConsumptionTariff2"],
+            supply_total=row["actualSupplyTotal"],
+        )
+
+    @field_validator("reading_time", mode="before")
+    @classmethod
+    def _parse_reading_time(cls, v: Any) -> Any:
+        """Parse the portal's 7-digit-fraction UTC timestamps."""
+        if isinstance(v, str):
+            # e.g. "2026-10-31T23:00:00.0000000Z" — Python's fromisoformat
+            # accepts at most 6 fractional digits.
+            text = v.replace("Z", "+00:00")
+            if "." in text:
+                head, _, tail = text.partition(".")
+                digits = "".join(ch for ch in tail if ch.isdigit())
+                offset = tail[len(digits) :]
+                text = f"{head}.{digits[:6].ljust(6, '0')}{offset}"
+            parsed = datetime.fromisoformat(text)
+            if parsed.tzinfo is None:
+                parsed = parsed.replace(tzinfo=UTC)
+            return parsed
+        return v

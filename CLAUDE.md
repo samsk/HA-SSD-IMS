@@ -4,7 +4,7 @@ This file provides guidance to Claude Code (claude.ai/code) when working with co
 
 ## What this is
 
-A Home Assistant custom integration (HACS) for the SSD IMS energy portal (`https://ims.ssd.sk`). It logs into the portal, discovers Points of Delivery (PODs), and imports hourly consumption/supply data into Home Assistant's long-term statistics for the Energy dashboard. All integration code lives in `custom_components/ssd_ims/`.
+A Home Assistant custom integration (installed through HACS, which Home Assistant 2026.11+ has built in as the Marketplace — same catalog, same `hacs.json`) for the SSD IMS energy portal (`https://ims.ssd.sk`). It logs into the portal, discovers Points of Delivery (PODs), and imports hourly consumption/supply data into Home Assistant's long-term statistics for the Energy dashboard. All integration code lives in `custom_components/ssd_ims/`.
 
 ## Commands
 
@@ -25,7 +25,7 @@ make docker-down
 
 Run a single test: `.venv/bin/python -m pytest tests/test_api_client.py::TestSsdImsApiClient::TestAuthentication::test_successful_authentication -v`
 
-`asyncio_mode = "auto"` is set in `pytest.ini`, so async test functions don't need `@pytest.mark.asyncio`. There is no `pyproject.toml` in this repo — `requirements.txt` is the single, pinned source of truth for dev/test dependencies, and neither Home Assistant's integration loader nor HACS reads project-level Python packaging metadata (they only read `custom_components/ssd_ims/manifest.json` and `hacs.json`), so there was nothing else it would have been needed for.
+`asyncio_mode = "auto"` is set in `pytest.ini`, so async test functions don't need `@pytest.mark.asyncio`. The test harness is `pytest-homeassistant`, published by Home Assistant core with the same version as `homeassistant` (bump both together); it loads automatically and needs `-p no:respx` in `pytest.ini`, otherwise every test fails with "httpx was already imported". The older community `pytest-homeassistant-custom-component` is discontinued — never install both. There is no `pyproject.toml` in this repo — `requirements.txt` is the single, pinned source of truth for dev/test dependencies, and neither Home Assistant's integration loader nor HACS reads project-level Python packaging metadata (they only read `custom_components/ssd_ims/manifest.json` and `hacs.json`), so there was nothing else it would have been needed for.
 
 `scripts/develop` runs Home Assistant directly (non-Docker) against `./config`, with `custom_components/` on `PYTHONPATH`.
 
@@ -64,4 +64,5 @@ The portal only ever has data through "yesterday", published once after midnight
 - Python 3.14+ (the pinned `homeassistant` release in `requirements.txt` requires it; the integration code itself has no such floor — it runs inside whatever Python the end user's Home Assistant core provides), Pydantic v2 for API response models, `ruff` for lint/format (no separate mypy/pylint config in this repo despite `.github/copilot-instructions.md` referencing them — that file documents Home Assistant core's own conventions and quality-scale process; only the general HA integration patterns it describes apply here, not its literal tool invocations).
 - Config-critical data (credentials, POD selection, naming) lives in `ConfigEntry.data`; only `scan_interval` is adjustable post-setup via `ConfigEntry.options`/the options flow.
 - Polling interval is user-configurable in this integration's config flow (`SCAN_INTERVAL_OPTIONS`) — this is an intentional exception to the usual HA guidance against configurable scan intervals, because the source data's daily publish cadence makes it a meaningful, bounded choice for the user.
+- Documentation language: `README.md` is user documentation in **Slovak** (the Marketplace/HACS page shows only `README.md`, and users are in Slovakia); keep statistic/entity IDs, code terms and HA menu names as they appear in the Slovak HA UI. `DEVELOPMENT.md`, `CHANGELOG.md`, issue templates, commits and PRs stay in English. When a change affects users, update the Slovak README.
 - `CHANGELOG.md` is maintained by hand per release, grouped under `## Version X.Y.Z` with bolded change-type prefixes (`**New feature**`, `**Bug fix**`, `**Internal**`, `**Metadata**`, `**Docs**`, `**Maintenance**`). Bump `manifest.json` `"version"` alongside changelog entries.

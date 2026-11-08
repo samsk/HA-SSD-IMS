@@ -1,7 +1,7 @@
 {
   "domain": "ssd_ims",
   "name": "Stredoslovenská distribučná (SSD IMS)",
-  "codeowners": ["@samsk", "@baracudaz"],
+  "codeowners": ["@baracudaz"],
   "config_flow": true,
   "dependencies": ["recorder"],
   "documentation": "https://github.com/baracudaz/ssd-ims",
@@ -9,5 +9,5 @@
   "iot_class": "cloud_polling",
   "issue_tracker": "https://github.com/baracudaz/ssd-ims/issues",
   "requirements": ["pydantic>=2.5.0"],
-  "version": "2.2.8"
+  "version": "2.3.0"
 }

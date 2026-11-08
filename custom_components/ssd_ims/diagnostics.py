@@ -41,6 +41,12 @@ async def async_get_config_entry_diagnostics(
             "last_update": pod_data.get("last_update"),
             "cumulative_totals": pod_data.get("cumulative_totals"),
             "aggregated_data": pod_data.get("aggregated_data"),
+            # Meter serial number is identifying, like the POD number.
+            "registry": {
+                k: v
+                for k, v in (pod_data.get("registry") or {}).items()
+                if k != "serial_number"
+            },
         }
 
     return {

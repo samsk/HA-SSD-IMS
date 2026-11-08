@@ -7,21 +7,37 @@ entity-platform validation) that would have caught it. This test closes
 that gap.
 """
 
+from datetime import UTC, datetime
 from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
 from homeassistant.config_entries import ConfigEntryState
 from homeassistant.core import DOMAIN as HOMEASSISTANT_DOMAIN, HomeAssistant
 from homeassistant.helpers import issue_registry as ir
-from pytest_homeassistant_custom_component.common import MockConfigEntry
+from homeassistant.components.recorder.statistics import (
+    async_add_external_statistics,
+    get_last_statistics,
+    statistics_during_period,
+)
+from homeassistant.components.recorder.statistics import StatisticMeanType
+from pytest_homeassistant.common import MockConfigEntry
+from pytest_homeassistant.components.recorder.common import (
+    async_wait_recording_done,
+)
 
 from custom_components.ssd_ims.const import (
     CONF_HISTORY_DAYS,
     CONF_POD_NAME_MAPPING,
     CONF_POINT_OF_DELIVERY,
+    CONF_PRICE_NT,
+    CONF_PRICE_VT,
     DOMAIN,
 )
-from custom_components.ssd_ims.models import ChartData, PointOfDelivery
+from custom_components.ssd_ims.models import (
+    ChartData,
+    PointOfDelivery,
+    RegistryReading,
+)
 
 pytestmark = pytest.mark.usefixtures("recorder_mock", "enable_custom_integrations")
 
@@ -42,6 +58,26 @@ def _mock_api_client():
             sumActualConsumption=1.5,
             sumActualSupply=0.0,
         )
+    )
+    client.get_registry_data = AsyncMock(
+        return_value=[
+            RegistryReading(
+                serial_number="M1",
+                reading_time=datetime(2026, 8, 31, 22, tzinfo=UTC),
+                max_demand=3.0,
+                consumption_total=110.0,
+                consumption_tariff1=10.0,
+                consumption_tariff2=100.0,
+            ),
+            RegistryReading(
+                serial_number="M1",
+                reading_time=datetime(2026, 9, 30, 22, tzinfo=UTC),
+                max_demand=4.5,
+                consumption_total=230.0,
+                consumption_tariff1=20.0,
+                consumption_tariff2=210.0,
+            ),
+        ]
     )
     client.set_cached_pods = MagicMock()
     return client
@@ -218,3 +254,144 @@ async def test_password_rejected_with_422_starts_reauth_flow(hass: HomeAssistant
     flows = hass.config_entries.flow.async_progress_by_handler(DOMAIN)
     assert [flow["context"]["source"] for flow in flows] == ["reauth"]
     assert flows[0]["context"]["entry_id"] == entry.entry_id
+
+
+async def test_register_readings_imported_with_costs_and_exposed_as_sensors(
+    hass: HomeAssistant, caplog: pytest.LogCaptureFixture
+):
+    """Register readings flow through the real recorder (energy + cost
+    external statistics) and the real sensor platform (meter reading and
+    peak demand entities)."""
+    entry = MockConfigEntry(
+        domain=DOMAIN,
+        version=2,
+        unique_id="test_user",
+        data={
+            "username": "test_user",
+            "password": "test_pass",
+            CONF_POINT_OF_DELIVERY: [POD_ID],
+            CONF_POD_NAME_MAPPING: {POD_ID: "Home"},
+            CONF_HISTORY_DAYS: 1,
+        },
+        options={CONF_PRICE_VT: 0.25, CONF_PRICE_NT: 0.125},
+    )
+    entry.add_to_hass(hass)
+
+    with patch(
+        "custom_components.ssd_ims.SsdImsApiClient", return_value=_mock_api_client()
+    ):
+        assert await hass.config_entries.async_setup(entry.entry_id)
+        await hass.async_block_till_done()
+    await async_wait_recording_done(hass)
+
+    september_last_hour = datetime(2026, 9, 30, 21, tzinfo=UTC).timestamp()
+    expected = {
+        "ssd_ims:home_consumption_vt": 10.0,
+        "ssd_ims:home_consumption_nt": 110.0,
+        "ssd_ims:home_cost_vt": 2.5,
+        "ssd_ims:home_cost_nt": 13.75,
+    }
+    for statistic_id, expected_sum in expected.items():
+        stats = await hass.async_add_executor_job(
+            get_last_statistics, hass, 1, statistic_id, True, {"start", "sum"}
+        )
+        assert statistic_id in stats, f"{statistic_id} was not imported"
+        assert stats[statistic_id][0]["start"] == september_last_hour
+        assert stats[statistic_id][0]["sum"] == pytest.approx(expected_sum)
+
+    vt = hass.states.get("sensor.home_high_tariff_meter_reading")
+    nt = hass.states.get("sensor.home_low_tariff_meter_reading")
+    peak = hass.states.get("sensor.home_peak_demand")
+    assert vt is not None and float(vt.state) == 20.0
+    assert nt is not None and float(nt.state) == 210.0
+    assert peak is not None and float(peak.state) == 4.5
+    assert vt.attributes["meter_serial_number"] == "M1"
+
+    assert "impossible" not in caplog.text
+    assert "Traceback" not in caplog.text
+
+
+async def test_hourly_cost_follows_register_mix_and_is_corrected_later(
+    hass: HomeAssistant,
+):
+    """Hourly actual_consumption costs use each register period's VT/NT mix;
+    hours priced provisionally (after the last reading) are corrected once
+    the closing reading arrives. Runs against the real recorder, including
+    overwriting already imported cost rows."""
+    import asyncio
+
+    from custom_components.ssd_ims.coordinator import SsdImsDataCoordinator
+
+    async_add_external_statistics(
+        hass,
+        {
+            "has_sum": True,
+            "mean_type": StatisticMeanType.NONE,
+            "name": "Home Actual Consumption",
+            "source": DOMAIN,
+            "statistic_id": "ssd_ims:home_actual_consumption",
+            "unit_of_measurement": "kWh",
+            "unit_class": "energy",
+        },
+        [
+            {"start": datetime(2026, 10, 15, 10, tzinfo=UTC), "sum": 1.0},
+            {"start": datetime(2026, 10, 15, 11, tzinfo=UTC), "sum": 3.0},
+            {"start": datetime(2026, 11, 2, 10, tzinfo=UTC), "sum": 7.0},
+        ],
+    )
+    await async_wait_recording_done(hass)
+
+    coordinator = SsdImsDataCoordinator.__new__(SsdImsDataCoordinator)
+    coordinator.hass = hass
+    coordinator.config = {
+        CONF_POD_NAME_MAPPING: {POD_ID: "Home"},
+        CONF_PRICE_VT: 0.3,
+        CONF_PRICE_NT: 0.1,
+    }
+    coordinator._stats_lock = asyncio.Lock()
+    coordinator.data = {}  # not the first refresh
+
+    def reading(when, vt, nt):
+        return RegistryReading(
+            serial_number="M1",
+            reading_time=when,
+            consumption_tariff1=vt,
+            consumption_tariff2=nt,
+        )
+
+    async def run_and_read():
+        await coordinator._update_hourly_costs([POD_ID])
+        await async_wait_recording_done(hass)
+        rows = await hass.async_add_executor_job(
+            statistics_during_period,
+            hass,
+            datetime(2026, 1, 1, tzinfo=UTC),
+            None,
+            {"ssd_ims:home_actual_consumption_cost"},
+            "hour",
+            None,
+            {"sum"},
+        )
+        return [
+            round(r["sum"], 6) for r in rows["ssd_ims:home_actual_consumption_cost"]
+        ]
+
+    # October: 10 % VT -> 0.1 * 0.3 + 0.9 * 0.1 = 0.12 EUR/kWh. November has
+    # no closing reading yet, so it's priced with October's mix.
+    coordinator._registry_readings = {
+        POD_ID: [
+            reading(datetime(2026, 9, 30, 22, tzinfo=UTC), 10, 100),
+            reading(datetime(2026, 10, 31, 23, tzinfo=UTC), 20, 190),
+        ]
+    }
+    assert await run_and_read() == [0.12, 0.36, 0.84]
+
+    # November closes with 0 % VT -> 0.10 EUR/kWh: its hour is recomputed.
+    coordinator._registry_readings[POD_ID].append(
+        reading(datetime(2026, 11, 30, 23, tzinfo=UTC), 20, 230)
+    )
+    assert await run_and_read() == [0.12, 0.36, 0.76]
+
+    # No prices -> nothing is computed (and nothing breaks).
+    coordinator.config = {CONF_POD_NAME_MAPPING: {POD_ID: "Home"}}
+    await coordinator._update_hourly_costs([POD_ID])

@@ -19,7 +19,7 @@
       },
       "point_of_delivery": {
         "title": "Vyberte odberné miesta",
-        "description": "Vyberte ktoré odberné miesta chcete monitorovať",
+        "description": "Vyberte odberné miesta, ktoré chcete sledovať. Každé je označené EIC kódom odberného miesta – 16-miestnym kódom, ktorý nájdete na faktúre.",
         "data": {
           "selected_pods": "Odberné miesta"
         }
@@ -62,10 +62,26 @@
     "step": {
       "init": {
         "title": "Možnosti SSD IMS",
-        "description": "Aktualizovať nastavenia integrácie",
+        "description": "Ak chcete v paneli Energia vidieť aj náklady, zadajte ceny elektriny za kWh. Použite koncové ceny s DPH z faktúry od dodávateľa – pri SSE ich nájdete pod nadpisom „Aktuálne koncové ceny elektriny platné pre Vašu sadzbu“. Pri jednotarifnej sadzbe (D1, D2) stačí vyplniť cenu za VT. Ak ceny nevyplníte, náklady sa počítať nebudú.",
         "data": {
-          "scan_interval": "Interval aktualizácie"
+          "scan_interval": "Interval aktualizácie",
+          "price_vt": "Cena vo vysokej tarife (VT)",
+          "price_nt": "Cena v nízkej tarife (NT)"
+        },
+        "data_description": {
+          "price_vt": "Koncová cena za 1 kWh v eurách vrátane DPH a všetkých poplatkov.",
+          "price_nt": "Koncová cena za 1 kWh v eurách vrátane DPH a všetkých poplatkov. Pri jednotarifnej sadzbe pole nechajte prázdne – celá spotreba sa vypočíta s cenou za VT."
         }
+      }
+    }
+  },
+  "selector": {
+    "scan_interval": {
+      "options": {
+        "5": "5 minút (len na ladenie)",
+        "360": "6 hodín (odporúčané)",
+        "720": "12 hodín",
+        "1440": "24 hodín"
       }
     }
   }

@@ -8,8 +8,14 @@ from typing import Any
 from aiohttp import ClientError, ClientSession, ClientTimeout
 from pydantic import ValidationError
 
-from .const import API_CHART, API_LOGIN, API_PODS, PODS_CACHE_TTL
-from .models import AuthResponse, ChartData, PointOfDelivery
+from .const import API_CHART, API_LOGIN, API_PODS, API_REGISTRY, PODS_CACHE_TTL
+from .models import (
+    REGISTRY_COLUMNS,
+    AuthResponse,
+    ChartData,
+    PointOfDelivery,
+    RegistryReading,
+)
 
 _LOGGER = logging.getLogger(__name__)
 
@@ -410,6 +416,94 @@ class SsdImsApiClient:
                 sample_info = _log_data_sample(data, field)
                 _LOGGER.error("  %s: %s", field, sample_info)
             raise RuntimeError(f"Chart data validation failed: {str(e)}") from e
+
+    async def get_registry_data(
+        self,
+        pod_id: str,
+        from_date: datetime,
+        to_date: datetime,
+    ) -> list[RegistryReading]:
+        """Get meter register readings (Registrové údaje) for a period.
+
+        The endpoint is a generic portal grid: it only returns values for the
+        columns named in the request, as a positional ``values`` array per
+        row. Readings are returned sorted by ``reading_time``; rows that
+        can't be parsed are skipped with a warning.
+        """
+        if not self._authenticated:
+            raise SsdImsAuthenticationError("Not authenticated")
+
+        target_pod = await self._get_pod_by_stable_id(pod_id)
+        if not target_pod:
+            raise RuntimeError(f"POD not found for stable ID: {pod_id}")
+
+        from_utc = from_date.astimezone(UTC).strftime("%Y-%m-%dT%H:%M:%S.000Z")
+        to_utc = to_date.astimezone(UTC).strftime("%Y-%m-%dT%H:%M:%S.000Z")
+        payload = {
+            "page": {"totalRows": 0, "currentPage": 1, "pageSize": 500},
+            "columns": [
+                {"member": member, "index": index, "isVisible": True}
+                for index, member in enumerate(REGISTRY_COLUMNS)
+            ],
+            "filters": [
+                {
+                    "member": "pointOfDeliveryId",
+                    "operator": "Equals",
+                    "type": "Int",
+                    "value": target_pod.value,
+                },
+                {
+                    "member": "billingPeriodEndDatetime",
+                    "operator": "GreaterOrEquals",
+                    "type": "Date",
+                    "value": from_utc,
+                    "rangeOperator": "Lower",
+                    "rangeValue": to_utc,
+                },
+                {
+                    "member": "billingPeriodEndDatetime",
+                    "operator": "Lower",
+                    "type": "Date",
+                    "value": to_utc,
+                    "rangeOperator": None,
+                    "rangeValue": None,
+                },
+            ],
+            "sort": [],
+            "isExport": False,
+        }
+
+        data = await self._retry_request_with_backoff(
+            "POST", API_REGISTRY, json=payload
+        )
+        if not isinstance(data, dict) or not isinstance(data.get("rows"), list):
+            _LOGGER.error(
+                "Unexpected registry data response format: %s", type(data).__name__
+            )
+            raise RuntimeError("Invalid registry data response format")
+
+        readings: list[RegistryReading] = []
+        for row in data["rows"]:
+            values = row.get("values") if isinstance(row, dict) else None
+            try:
+                readings.append(RegistryReading.from_row(values or []))
+            except (ValidationError, ValueError, TypeError) as e:
+                # Log the error, not the row: it contains the meter serial.
+                _LOGGER.warning(
+                    "Skipping unparseable registry row (%d values): %s",
+                    len(values) if isinstance(values, list) else 0,
+                    type(e).__name__,
+                )
+
+        readings.sort(key=lambda r: r.reading_time)
+        _LOGGER.debug(
+            "Retrieved %d registry readings for POD %s (%s to %s)",
+            len(readings),
+            pod_id,
+            from_date,
+            to_date,
+        )
+        return readings
 
     def set_cached_pods(self, pods: list[PointOfDelivery]) -> None:
         """Seed the POD cache from an already-known, freshly discovered list.

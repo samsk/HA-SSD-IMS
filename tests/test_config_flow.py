@@ -1,5 +1,5 @@
 """Tests for the SSD IMS config flow, using Home Assistant's own test
-harness (pytest_homeassistant_custom_component) so the flow runs through
+harness (pytest-homeassistant) so the flow runs through
 real hass.config_entries machinery instead of being hand-mocked."""
 
 from unittest.mock import AsyncMock, MagicMock, patch
@@ -8,7 +8,7 @@ import pytest
 from homeassistant import config_entries
 from homeassistant.core import HomeAssistant
 from homeassistant.data_entry_flow import FlowResultType
-from pytest_homeassistant_custom_component.common import MockConfigEntry
+from pytest_homeassistant.common import MockConfigEntry
 
 from custom_components.ssd_ims.const import (
     CONF_HISTORY_DAYS,
@@ -102,6 +102,8 @@ async def test_full_setup_flow_creates_entry(hass: HomeAssistant):
     assert result["data"][CONF_POINT_OF_DELIVERY] == [POD_ID]
     assert result["data"][CONF_POD_NAME_MAPPING] == {POD_ID: "Home"}
     assert result["data"][CONF_HISTORY_DAYS] > 0
+    # Default interval from the select (a string option) is stored as minutes.
+    assert result["data"]["scan_interval"] == 360
 
 
 async def test_invalid_credentials_shows_error(hass: HomeAssistant):
@@ -282,6 +284,7 @@ async def test_options_flow_updates_scan_interval(hass: HomeAssistant):
 
     coordinator = MagicMock()
     coordinator.update_config = AsyncMock()
+    coordinator.async_request_refresh = AsyncMock()
     entry.runtime_data = coordinator
 
     result = await hass.config_entries.options.async_init(entry.entry_id)
@@ -290,8 +293,75 @@ async def test_options_flow_updates_scan_interval(hass: HomeAssistant):
 
     result = await hass.config_entries.options.async_configure(
         result["flow_id"],
-        {"scan_interval": 720},
+        {"scan_interval": "720"},
     )
 
     assert result["type"] is FlowResultType.CREATE_ENTRY
     coordinator.update_config.assert_called_once()
+    # The UI sends the selected option as a string; it's stored as minutes.
+    assert entry.options["scan_interval"] == 720
+    assert coordinator.update_config.call_args.args[0]["scan_interval"] == 720
+
+
+async def test_options_flow_saves_tariff_prices(hass: HomeAssistant):
+    entry = MockConfigEntry(
+        domain=DOMAIN,
+        unique_id="test_user",
+        data={
+            "username": "test_user",
+            "password": "test_pass",
+            CONF_POINT_OF_DELIVERY: [POD_ID],
+            CONF_POD_NAME_MAPPING: {},
+        },
+    )
+    entry.add_to_hass(hass)
+
+    coordinator = MagicMock()
+    coordinator.update_config = AsyncMock()
+    coordinator.async_request_refresh = AsyncMock()
+    entry.runtime_data = coordinator
+
+    result = await hass.config_entries.options.async_init(entry.entry_id)
+    assert set(result["data_schema"].schema) >= {"price_vt", "price_nt"}
+
+    result = await hass.config_entries.options.async_configure(
+        result["flow_id"],
+        {"scan_interval": "360", "price_vt": 0.2502, "price_nt": 0.1376},
+    )
+
+    assert result["type"] is FlowResultType.CREATE_ENTRY
+    assert entry.options["price_vt"] == 0.2502
+    assert entry.options["price_nt"] == 0.1376
+    pushed = coordinator.update_config.call_args.args[0]
+    assert pushed["price_vt"] == 0.2502
+    assert pushed["price_nt"] == 0.1376
+    # Costs are computed right away, not at the next scheduled poll.
+    coordinator.async_request_refresh.assert_awaited_once()
+
+
+async def test_options_flow_prices_are_optional(hass: HomeAssistant):
+    entry = MockConfigEntry(
+        domain=DOMAIN,
+        unique_id="test_user",
+        data={
+            "username": "test_user",
+            "password": "test_pass",
+            CONF_POINT_OF_DELIVERY: [POD_ID],
+            CONF_POD_NAME_MAPPING: {},
+        },
+        options={"price_vt": 0.3, "price_nt": 0.2},
+    )
+    entry.add_to_hass(hass)
+    coordinator = MagicMock()
+    coordinator.update_config = AsyncMock()
+    coordinator.async_request_refresh = AsyncMock()
+    entry.runtime_data = coordinator
+
+    result = await hass.config_entries.options.async_init(entry.entry_id)
+    result = await hass.config_entries.options.async_configure(
+        result["flow_id"], {"scan_interval": "360"}
+    )
+
+    assert result["type"] is FlowResultType.CREATE_ENTRY
+    assert "price_vt" not in entry.options
+    assert "price_nt" not in entry.options

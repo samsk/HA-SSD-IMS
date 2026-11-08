@@ -45,3 +45,29 @@ async def test_diagnostics_never_expose_raw_pod_id_or_friendly_name():
     assert diagnostics["coordinator_data"]["pod_1"]["cumulative_totals"] == {
         "actual_consumption": 42.0
     }
+
+
+async def test_diagnostics_include_register_reading_without_meter_serial():
+    entry = MagicMock()
+    entry.data = {"point_of_delivery": [REAL_POD_ID], "pod_name_mapping": {}}
+    entry.options = {"price_vt": 0.25}
+
+    coordinator = MagicMock()
+    coordinator.pods = {REAL_POD_ID: MagicMock()}
+    coordinator.data = {
+        REAL_POD_ID: {
+            "registry": {
+                "reading_time": "2026-10-31T23:00:00+00:00",
+                "serial_number": "340099999",
+                "consumption_vt": 350.7,
+            }
+        }
+    }
+    entry.runtime_data = coordinator
+
+    diagnostics = await async_get_config_entry_diagnostics(MagicMock(), entry)
+
+    assert "340099999" not in str(diagnostics)
+    assert diagnostics["coordinator_data"]["pod_1"]["registry"]["consumption_vt"] == (
+        350.7
+    )

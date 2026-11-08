@@ -18,6 +18,8 @@ from .const import (
     CONF_HISTORY_DAYS,
     CONF_POD_NAME_MAPPING,
     CONF_POINT_OF_DELIVERY,
+    CONF_PRICE_NT,
+    CONF_PRICE_VT,
     CONF_SCAN_INTERVAL,
     DEFAULT_HISTORY_DAYS,
     DEFAULT_POINT_OF_DELIVERY,
@@ -104,6 +106,10 @@ async def async_setup_entry(hass: HomeAssistant, entry: SsdImsConfigEntry) -> bo
         CONF_POD_NAME_MAPPING: entry.data.get(CONF_POD_NAME_MAPPING, {}),
         CONF_HISTORY_DAYS: entry.data.get(CONF_HISTORY_DAYS, DEFAULT_HISTORY_DAYS),
     }
+    # Optional tariff prices only ever live in entry.options
+    for price_key in (CONF_PRICE_VT, CONF_PRICE_NT):
+        if (price := entry.options.get(price_key)) is not None:
+            config[price_key] = price
 
     coordinator = SsdImsDataCoordinator(hass, api_client, config, entry)
     entry.runtime_data = coordinator

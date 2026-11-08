@@ -13,6 +13,14 @@ from homeassistant.data_entry_flow import AbortFlow
 from homeassistant.exceptions import HomeAssistantError
 from homeassistant.helpers import config_validation as cv
 from homeassistant.helpers.aiohttp_client import async_get_clientsession
+from homeassistant.helpers.selector import (
+    NumberSelector,
+    NumberSelectorConfig,
+    NumberSelectorMode,
+    SelectSelector,
+    SelectSelectorConfig,
+    SelectSelectorMode,
+)
 
 from .api_client import SsdImsApiClient
 from .const import (
@@ -20,7 +28,10 @@ from .const import (
     CONF_HISTORY_DAYS,
     CONF_POD_NAME_MAPPING,
     CONF_POINT_OF_DELIVERY,
+    CONF_PRICE_NT,
+    CONF_PRICE_VT,
     CONF_SCAN_INTERVAL,
+    CURRENCY,
     DEFAULT_ENABLE_HISTORY_IMPORT,
     DEFAULT_HISTORY_DAYS,
     DEFAULT_SCAN_INTERVAL,
@@ -33,6 +44,29 @@ from .helpers import sanitize_name
 from .models import PointOfDelivery
 
 _LOGGER = logging.getLogger(__name__)
+
+
+def _scan_interval_selector() -> SelectSelector:
+    """Update-interval choice with labels from the translation files.
+
+    Select options are strings, so the chosen value is converted back to
+    minutes (int) by _scan_interval_minutes before it's stored.
+    """
+    return SelectSelector(
+        SelectSelectorConfig(
+            options=[str(minutes) for minutes in SCAN_INTERVAL_OPTIONS],
+            translation_key=CONF_SCAN_INTERVAL,
+            mode=SelectSelectorMode.LIST,
+        )
+    )
+
+
+def _scan_interval_minutes(value: Any) -> int:
+    """Convert a selected update interval back to minutes."""
+    minutes = int(value)
+    if minutes not in SCAN_INTERVAL_OPTIONS:
+        raise vol.Invalid(f"Unsupported update interval: {value}")
+    return minutes
 
 
 class SsdImsConfigFlow(config_entries.ConfigFlow, domain=DOMAIN):
@@ -279,8 +313,8 @@ class SsdImsConfigFlow(config_entries.ConfigFlow, domain=DOMAIN):
         errors: dict[str, str] = {}
 
         if user_input is not None:
-            self._scan_interval = user_input.get(
-                CONF_SCAN_INTERVAL, DEFAULT_SCAN_INTERVAL
+            self._scan_interval = _scan_interval_minutes(
+                user_input.get(CONF_SCAN_INTERVAL, DEFAULT_SCAN_INTERVAL)
             )
             self._enable_history_import = user_input.get(
                 CONF_ENABLE_HISTORY_IMPORT, DEFAULT_ENABLE_HISTORY_IMPORT
@@ -333,8 +367,8 @@ class SsdImsConfigFlow(config_entries.ConfigFlow, domain=DOMAIN):
             data_schema=vol.Schema(
                 {
                     vol.Optional(
-                        CONF_SCAN_INTERVAL, default=default_scan_interval
-                    ): vol.In(SCAN_INTERVAL_OPTIONS),
+                        CONF_SCAN_INTERVAL, default=str(default_scan_interval)
+                    ): _scan_interval_selector(),
                     vol.Optional(
                         CONF_ENABLE_HISTORY_IMPORT,
                         default=default_enable_history_import,
@@ -367,10 +401,30 @@ class SsdImsOptionsFlow(config_entries.OptionsFlow):
         errors: dict[str, str] = {}
 
         if user_input is not None:
+            user_input = {
+                **user_input,
+                CONF_SCAN_INTERVAL: _scan_interval_minutes(
+                    user_input.get(CONF_SCAN_INTERVAL, DEFAULT_SCAN_INTERVAL)
+                ),
+            }
             # Update coordinator configuration
             coordinator = self.config_entry.runtime_data
             await coordinator.update_config({**self.config_entry.data, **user_input})
+            # Apply new prices/settings now rather than at the next scheduled
+            # poll, which can be up to a day away.
+            await coordinator.async_request_refresh()
             return self.async_create_entry(title="", data=user_input)
+
+        price_selector = NumberSelector(
+            NumberSelectorConfig(
+                min=0,
+                max=100,
+                step="any",
+                mode=NumberSelectorMode.BOX,
+                unit_of_measurement=f"{CURRENCY}/kWh",
+            )
+        )
+        options = self.config_entry.options
 
         return self.async_show_form(
             step_id="init",
@@ -378,13 +432,25 @@ class SsdImsOptionsFlow(config_entries.OptionsFlow):
                 {
                     vol.Optional(
                         CONF_SCAN_INTERVAL,
-                        default=self.config_entry.options.get(
-                            CONF_SCAN_INTERVAL,
-                            self.config_entry.data.get(
-                                CONF_SCAN_INTERVAL, DEFAULT_SCAN_INTERVAL
-                            ),
+                        default=str(
+                            options.get(
+                                CONF_SCAN_INTERVAL,
+                                self.config_entry.data.get(
+                                    CONF_SCAN_INTERVAL, DEFAULT_SCAN_INTERVAL
+                                ),
+                            )
                         ),
-                    ): vol.In(SCAN_INTERVAL_OPTIONS),
+                    ): _scan_interval_selector(),
+                    # suggested_value (not default) so the field can be
+                    # cleared again to stop importing costs.
+                    vol.Optional(
+                        CONF_PRICE_VT,
+                        description={"suggested_value": options.get(CONF_PRICE_VT)},
+                    ): price_selector,
+                    vol.Optional(
+                        CONF_PRICE_NT,
+                        description={"suggested_value": options.get(CONF_PRICE_NT)},
+                    ): price_selector,
                 }
             ),
             errors=errors,

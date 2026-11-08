@@ -19,7 +19,7 @@
       },
       "point_of_delivery": {
         "title": "Select Points of Delivery",
-        "description": "Choose which Points of Delivery to monitor",
+        "description": "Choose which Points of Delivery to monitor. Each is identified by its EIC code, the 16-character code printed on your invoice.",
         "data": {
           "selected_pods": "Points of Delivery"
         }
@@ -62,10 +62,26 @@
     "step": {
       "init": {
         "title": "SSD IMS Options",
-        "description": "Update integration settings",
+        "description": "Update integration settings. Optional VT/NT prices are final prices in EUR per kWh incl. VAT, as printed on your supplier invoice (SSE: \"Aktuálne koncové ceny elektriny platné pre Vašu sadzbu\"). They are used to import hourly costs for the actual consumption statistic and monthly costs for the tariff register readings. For a single-rate tariff (D1/D2) fill in VT only; leave both empty to skip costs.",
         "data": {
-          "scan_interval": "Update interval"
+          "scan_interval": "Update interval",
+          "price_vt": "High tariff (VT) price",
+          "price_nt": "Low tariff (NT) price"
+        },
+        "data_description": {
+          "price_vt": "Final price in EUR per kWh including VAT and all per-kWh fees, e.g. from your supplier invoice.",
+          "price_nt": "Final price in EUR per kWh including VAT and all per-kWh fees, e.g. from your supplier invoice. Leave empty for single-rate tariffs (D1/D2) — the VT price is then used for all consumption."
         }
+      }
+    }
+  },
+  "selector": {
+    "scan_interval": {
+      "options": {
+        "5": "5 minutes (debugging only)",
+        "360": "6 hours (recommended)",
+        "720": "12 hours",
+        "1440": "24 hours"
       }
     }
   }

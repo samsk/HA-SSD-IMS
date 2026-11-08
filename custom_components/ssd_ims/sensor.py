@@ -2,6 +2,7 @@
 
 import logging
 from datetime import datetime
+from typing import Any
 
 from homeassistant.components.sensor import (
     SensorDeviceClass,
@@ -9,7 +10,7 @@ from homeassistant.components.sensor import (
     SensorStateClass,
 )
 from homeassistant.config_entries import ConfigEntry
-from homeassistant.const import UnitOfEnergy
+from homeassistant.const import UnitOfEnergy, UnitOfPower
 from homeassistant.core import HomeAssistant
 from homeassistant.helpers.device_registry import DeviceInfo
 from homeassistant.helpers.entity_platform import AddEntitiesCallback
@@ -22,6 +23,7 @@ from .const import (
     CONF_POINT_OF_DELIVERY,
     DEFAULT_POINT_OF_DELIVERY,
     DOMAIN,
+    PORTAL_URL,
     SENSOR_TYPE_ACTUAL_CONSUMPTION,
     SENSOR_TYPE_ACTUAL_SUPPLY,
     SENSOR_TYPE_LABELS,
@@ -49,6 +51,10 @@ async def async_setup_entry(
     for pod_id in pod_ids:
         friendly_name = pod_name_mapping.get(pod_id, pod_id)
         sensors.append(SsdImsLastUpdateSensor(coordinator, pod_id, friendly_name))
+        sensors.extend(
+            SsdImsRegisterSensor(coordinator, pod_id, friendly_name, description)
+            for description in REGISTER_SENSORS
+        )
         for sensor_type in enabled_sensor_types:
             sensors.append(
                 SsdImsYesterdaySensor(
@@ -89,8 +95,11 @@ class SsdImsSensor(CoordinatorEntity[SsdImsDataCoordinator], SensorEntity):
         self._attr_device_info = DeviceInfo(
             identifiers={(DOMAIN, self.pod_id)},
             name=self.friendly_name,
-            manufacturer="IMS.SSD.sk",
-            model="IMS Portal",
+            manufacturer="Stredoslovenská distribučná, a.s.",
+            model="Odberné miesto elektriny",
+            configuration_url=PORTAL_URL,
+            # The EIC code from the invoice, so the device can be matched to it.
+            serial_number=self.pod_id,
         )
 
     def _setup_entity_naming(self, sensor_name: str) -> None:
@@ -224,3 +233,69 @@ class SsdImsLastUpdateSensor(SsdImsSensor):
 
         last_update_str = pod_data.get("last_update")
         return dt_util.parse_datetime(last_update_str) if last_update_str else None
+
+
+# (registry data key, entity name, unique-id suffix, is_energy)
+REGISTER_SENSORS: tuple[tuple[str, str, str, bool], ...] = (
+    ("consumption_vt", "High Tariff Meter Reading", "meter_reading_vt", True),
+    ("consumption_nt", "Low Tariff Meter Reading", "meter_reading_nt", True),
+    ("max_demand", "Peak Demand", "peak_demand", False),
+)
+
+
+class SsdImsRegisterSensor(SsdImsSensor):
+    """Latest monthly meter register reading (Registrové údaje).
+
+    The tariff readings are the meter's cumulative VT (1.8.1) / NT (1.8.2)
+    counters; peak demand (1.6.0) is the highest quarter-hour demand of the
+    period that ended at the reading. Values change at most a few times a
+    month. For the Energy dashboard use the imported
+    ``ssd_ims:<pod>_consumption_vt/_nt`` statistics instead, which place each
+    month's consumption in the right month.
+    """
+
+    def __init__(
+        self,
+        coordinator: SsdImsDataCoordinator,
+        pod_id: str,
+        friendly_name: str,
+        description: tuple[str, str, str, bool],
+    ) -> None:
+        """Initialize register sensor."""
+        super().__init__(coordinator, pod_id, friendly_name)
+        self._data_key, sensor_name, unique_suffix, is_energy = description
+        if is_energy:
+            self._attr_device_class = SensorDeviceClass.ENERGY
+            self._attr_native_unit_of_measurement = UnitOfEnergy.KILO_WATT_HOUR
+            self._attr_state_class = SensorStateClass.TOTAL_INCREASING
+        else:
+            self._attr_device_class = SensorDeviceClass.POWER
+            self._attr_native_unit_of_measurement = UnitOfPower.KILO_WATT
+            self._attr_state_class = SensorStateClass.MEASUREMENT
+        self._attr_unique_id = f"{pod_id}_{unique_suffix}"
+        self._setup_entity_naming(sensor_name)
+
+    def _registry(self) -> dict[str, Any] | None:
+        if not self.coordinator.data or not (
+            pod_data := self.coordinator.data.get(self.pod_id)
+        ):
+            return None
+        return pod_data.get("registry")
+
+    @property
+    def native_value(self) -> StateType | None:
+        """Return the latest register value."""
+        if not (registry := self._registry()):
+            return None
+        value = registry.get(self._data_key)
+        return float(value) if value is not None else None
+
+    @property
+    def extra_state_attributes(self) -> dict[str, Any] | None:
+        """Return reading date and meter serial number."""
+        if not (registry := self._registry()):
+            return None
+        return {
+            "reading_time": registry.get("reading_time"),
+            "meter_serial_number": registry.get("serial_number"),
+        }
