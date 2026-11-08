@@ -69,6 +69,8 @@ Home Assistant neuplatní cenu z panela Energie na údaje importované touto int
 2. V nastaveniach panela Energie upravte pripojenie k sieti a v časti **Sledovanie nákladov** zvoľte **Použiť entitu sledujúcu celkové náklady** → `ssd_ims:<názov>_actual_consumption_cost`.
 3. V nastaveniach domácnosti si nastavte menu **EUR**.
 
+Ak ste zákazníkom SSE, ceny nemusíte zadávať ručne: integrácia [SSE eZóna](https://github.com/baracudaz/sse-ezona) ich preberá z portálu dodávateľa vrátane energopomoci a SSD IMS ich pre odberné miesto s rovnakým EIC kódom použije automaticky namiesto cien z možností. Krok 2 a 3 platia aj vtedy.
+
 <img src="artifacts/screenshots/options.png" alt="Možnosti SSD IMS" width="450">
 
 **Kde nájdete ceny:** na faktúre od dodávateľa — SSE ich uvádza pod nadpisom *Aktuálne koncové ceny elektriny platné pre Vašu sadzbu*. Tieto koncové ceny už obsahujú silovú elektrinu, distribúciu, poplatky aj DPH, položky faktúry preto nesčítavajte sami. Mesačné poplatky (napr. za istič) v nákladoch nie sú.

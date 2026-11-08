@@ -62,7 +62,7 @@
     "step": {
       "init": {
         "title": "Možnosti SSD IMS",
-        "description": "Ak chcete v paneli Energia vidieť aj náklady, zadajte ceny elektriny za kWh. Použite koncové ceny s DPH z faktúry od dodávateľa – pri SSE ich nájdete pod nadpisom „Aktuálne koncové ceny elektriny platné pre Vašu sadzbu“. Pri jednotarifnej sadzbe (D1, D2) stačí vyplniť cenu za VT. Ak ceny nevyplníte, náklady sa počítať nebudú.",
+        "description": "Ak chcete v paneli Energia vidieť aj náklady, zadajte ceny elektriny za kWh. Použite koncové ceny s DPH z faktúry od dodávateľa – pri SSE ich nájdete pod nadpisom „Aktuálne koncové ceny elektriny platné pre Vašu sadzbu“. Pri jednotarifnej sadzbe (D1, D2) stačí vyplniť cenu za VT. Ak ceny nevyplníte, náklady sa počítať nebudú. Ak máte nainštalovanú integráciu SSE eZóna (sse_ezona), ceny sa pre odberné miesta s rovnakým EIC kódom berú z nej a tieto polia sa pre ne nepoužijú.",
         "data": {
           "scan_interval": "Interval aktualizácie",
           "price_vt": "Cena vo vysokej tarife (VT)",

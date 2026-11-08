@@ -62,7 +62,7 @@
     "step": {
       "init": {
         "title": "SSD IMS Options",
-        "description": "Update integration settings. Optional VT/NT prices are final prices in EUR per kWh incl. VAT, as printed on your supplier invoice (SSE: \"Aktuálne koncové ceny elektriny platné pre Vašu sadzbu\"). They are used to import hourly costs for the actual consumption statistic and monthly costs for the tariff register readings. For a single-rate tariff (D1/D2) fill in VT only; leave both empty to skip costs.",
+        "description": "Update integration settings. Optional VT/NT prices are final prices in EUR per kWh incl. VAT, as printed on your supplier invoice (SSE: \"Aktuálne koncové ceny elektriny platné pre Vašu sadzbu\"). They are used to import hourly costs for the actual consumption statistic and monthly costs for the tariff register readings. For a single-rate tariff (D1/D2) fill in VT only; leave both empty to skip costs. If the SSE eZóna integration (sse_ezona) is installed, its prices are used instead for points with the same EIC code.",
         "data": {
           "scan_interval": "Update interval",
           "price_vt": "High tariff (VT) price",

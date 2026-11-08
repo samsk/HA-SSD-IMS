@@ -125,6 +125,7 @@ async def async_setup_entry(hass: HomeAssistant, entry: SsdImsConfigEntry) -> bo
 async def async_unload_entry(hass: HomeAssistant, entry: SsdImsConfigEntry) -> bool:
     """Unload a config entry."""
     if unload_ok := await hass.config_entries.async_unload_platforms(entry, PLATFORMS):
+        entry.runtime_data.async_unwatch_supplier_prices()
         entry.runtime_data = None
 
     return unload_ok

@@ -1,5 +1,9 @@
 # Changelog
 
+## Version 2.4.0
+
+- **New feature**: Prices from the SSE eZóna integration (`sse_ezona`, 0.3.0+). When its price sensors exist for a point with the same EIC code (matched by unique_id `ELECTRICITY_<EIC>_price_vt` / `_nt` / `_jt`), they are used for the hourly and monthly costs instead of the prices in the options. When one of them changes or gets its value after a restart, the costs are recomputed right away from the cached register readings, without new portal requests. While any of them has no value, that point gets no price, so night consumption is never costed at the VT price.
+
 ## Version 2.3.0
 
 **Upgrading**: no action needed — existing statistics, sensors and settings are kept, and the new register sensors and VT/NT statistics appear on their own. For costs, enter your prices in the integration's options and pick `ssd_ims:<pod_name>_actual_consumption_cost` as the cost of `actual_consumption` in the Energy dashboard. Don't add the VT/NT statistics to the Energy dashboard as well (the same energy would be counted twice), and note that all history is priced at the current price. See *Prechod na verziu 2.3.0* in the README.
