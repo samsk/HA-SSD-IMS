@@ -1,5 +1,10 @@
 # Changelog
 
+## Version 2.5.0
+
+- **New feature**: Price history for supplier prices (#33). With `sse_ezona` prices, each hour's cost uses the price valid in that hour, read from the price sensor's hourly mean in Home Assistant's long-term statistics. A price change applies from its hour on, and recomputing recent hours (when a register reading arrives) keeps the old prices for the hours before the change. Monthly VT/NT costs are priced the same way. Hours before the sensor's first recorded hour use its first known price. Prices from the options still apply to every hour, as before.
+- **Bug fix**: Supplier price sensors added after the day's update (for example when `sse_ezona` is set up later that day) were only used from the next day. They are now picked up as soon as they are registered, and removing one reprices with the prices from the options.
+
 ## Version 2.4.0
 
 - **New feature**: Prices from the SSE eZóna integration (`sse_ezona`, 0.3.0+). When its price sensors exist for a point with the same EIC code (matched by unique_id `ELECTRICITY_<EIC>_price_vt` / `_nt` / `_jt`), they are used for the hourly and monthly costs instead of the prices in the options. When one of them changes or gets its value after a restart, the costs are recomputed right away from the cached register readings, without new portal requests. While any of them has no value, that point gets no price, so night consumption is never costed at the VT price.
