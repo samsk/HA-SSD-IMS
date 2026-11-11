@@ -17,7 +17,11 @@ from custom_components.ssd_ims.const import (
 )
 from custom_components.ssd_ims.coordinator import SsdImsDataCoordinator
 from custom_components.ssd_ims.helpers import PriceHistory
-from custom_components.ssd_ims.models import REGISTRY_COLUMNS, RegistryReading
+from custom_components.ssd_ims.models import (
+    REGISTRY_COLUMNS,
+    REGISTRY_COLUMNS_BASE,
+    RegistryReading,
+)
 
 POD_ID = "99XXX1234560000G"
 
@@ -28,11 +32,13 @@ def _reading(
     nt: float,
     serial: str = "M1",
     max_demand: float = 3.0,
+    min_demand: float | None = None,
 ) -> RegistryReading:
     return RegistryReading(
         serial_number=serial,
         reading_time=when,
         max_demand=max_demand,
+        min_demand=min_demand,
         consumption_total=vt + nt,
         consumption_tariff1=vt,
         consumption_tariff2=nt,
@@ -41,7 +47,7 @@ def _reading(
 
 
 class TestRegistryReadingModel:
-    def test_from_row_parses_portal_row(self):
+    def test_from_row_parses_portal_row_without_min(self):
         row = [
             "340016976",
             "2026-10-31T23:00:00.0000000Z",
@@ -55,9 +61,26 @@ class TestRegistryReadingModel:
         assert reading.serial_number == "340016976"
         assert reading.reading_time == datetime(2026, 10, 31, 23, tzinfo=UTC)
         assert reading.max_demand == 3.244
+        assert reading.min_demand is None
         assert reading.consumption_tariff1 == 350.743
         assert reading.consumption_tariff2 == 5944.52
         assert reading.supply_total == 0
+
+    def test_from_row_parses_min_demand(self):
+        row = [
+            "340016976",
+            "2026-10-31T23:00:00.0000000Z",
+            3.244,
+            0.12,
+            6295.263,
+            350.743,
+            5944.52,
+            0,
+        ]
+        reading = RegistryReading.from_row(row)
+        assert reading.max_demand == 3.244
+        assert reading.min_demand == 0.12
+        assert reading.consumption_tariff1 == 350.743
 
     def test_from_row_keeps_seconds_of_ad_hoc_reading(self):
         reading = RegistryReading.from_row(
@@ -91,8 +114,30 @@ class TestGetRegistryData:
             "columns": [],
             "page": {"totalRows": 3, "currentPage": 1, "pageSize": 500},
             "rows": [
-                {"values": ["M1", "2026-10-31T23:00:00.0000000Z", 3, 30, 3, 27, 0]},
-                {"values": ["M1", "2026-09-30T22:00:00.0000000Z", 2, 20, 2, 18, 0]},
+                {
+                    "values": [
+                        "M1",
+                        "2026-10-31T23:00:00.0000000Z",
+                        3,
+                        0.1,
+                        30,
+                        3,
+                        27,
+                        0,
+                    ]
+                },
+                {
+                    "values": [
+                        "M1",
+                        "2026-09-30T22:00:00.0000000Z",
+                        2,
+                        0.05,
+                        20,
+                        2,
+                        18,
+                        0,
+                    ]
+                },
                 {"values": ["garbage"]},
             ],
         }
@@ -114,6 +159,7 @@ class TestGetRegistryData:
         assert "garbage" not in caplog.text
         # Unparseable row skipped, remaining rows sorted by time.
         assert [r.consumption_tariff1 for r in readings] == [2, 3]
+        assert readings[-1].min_demand == 0.1
 
         payload = mock_request.call_args.kwargs["json"]
         assert [c["member"] for c in payload["columns"]] == list(REGISTRY_COLUMNS)
@@ -122,6 +168,68 @@ class TestGetRegistryData:
         assert pod_filter["value"] == "session_value"
         assert payload["filters"][1]["value"] == "2025-10-01T00:00:00.000Z"
         assert payload["filters"][2]["value"] == "2026-11-09T00:00:00.000Z"
+
+    async def test_retries_without_min_on_column_rejection(self, api_client):
+        base_body = {
+            "columns": [],
+            "page": {"totalRows": 1, "currentPage": 1, "pageSize": 500},
+            "rows": [
+                {"values": ["M1", "2026-10-31T23:00:00.0000000Z", 3, 30, 3, 27, 0]},
+            ],
+        }
+        payloads: list[list[str]] = []
+        call_count = 0
+
+        def _cm(status: int, body: dict):
+            mock_response = AsyncMock()
+            mock_response.status = status
+            mock_response.headers = {"content-type": "application/json"}
+            mock_response.json = AsyncMock(return_value=body)
+            mock_cm = MagicMock()
+            mock_cm.__aenter__ = AsyncMock(return_value=mock_response)
+            mock_cm.__aexit__ = AsyncMock(return_value=None)
+            return mock_cm
+
+        def fake_request(method, url, **kwargs):
+            nonlocal call_count
+            call_count += 1
+            payloads.append([c["member"] for c in kwargs["json"]["columns"]])
+            if call_count == 1:
+                return _cm(400, {"error": "bad column"})
+            return _cm(200, base_body)
+
+        with patch.object(api_client._session, "request", side_effect=fake_request):
+            readings = await api_client.get_registry_data(
+                POD_ID,
+                datetime(2025, 10, 1, tzinfo=UTC),
+                datetime(2026, 11, 9, tzinfo=UTC),
+            )
+
+        assert call_count == 2
+        assert payloads[0] == list(REGISTRY_COLUMNS)
+        assert payloads[1] == list(REGISTRY_COLUMNS_BASE)
+        assert api_client._registry_min_unsupported is True
+        assert len(readings) == 1
+        assert readings[0].max_demand == 3
+        assert readings[0].min_demand is None
+
+        call_count = 0
+        payloads.clear()
+
+        def fake_request_base(method, url, **kwargs):
+            nonlocal call_count
+            call_count += 1
+            payloads.append([c["member"] for c in kwargs["json"]["columns"]])
+            return _cm(200, base_body)
+
+        with patch.object(api_client._session, "request", side_effect=fake_request_base):
+            await api_client.get_registry_data(
+                POD_ID,
+                datetime(2025, 10, 1, tzinfo=UTC),
+                datetime(2026, 11, 9, tzinfo=UTC),
+            )
+        assert call_count == 1
+        assert payloads[0] == list(REGISTRY_COLUMNS_BASE)
 
     async def test_unexpected_response_raises(self, api_client):
         with patch.object(api_client._session, "request") as mock_request:
@@ -143,7 +251,18 @@ class TestGetRegistryData:
             "columns": [],
             "page": {"totalRows": 10, "currentPage": 1, "pageSize": 500},
             "rows": [
-                {"values": ["M1", "2026-10-31T23:00:00.0000000Z", 3, 30, 3, 27, 0]},
+                {
+                    "values": [
+                        "M1",
+                        "2026-10-31T23:00:00.0000000Z",
+                        3,
+                        0.1,
+                        30,
+                        3,
+                        27,
+                        0,
+                    ]
+                },
             ],
         }
         with patch.object(api_client._session, "request") as mock_request:
@@ -347,6 +466,7 @@ class TestRegistryImport:
         assert registry["consumption_vt"] == 25
         assert registry["consumption_nt"] == 300
         assert registry["max_demand"] == 3.0
+        assert registry["min_demand"] is None
         assert registry["serial_number"] == "M1"
         assert coordinator._last_registry_fetch_date == date(2026, 11, 8)
         # Always requests the full history, so the first import is complete.

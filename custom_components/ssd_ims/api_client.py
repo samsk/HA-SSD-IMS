@@ -11,6 +11,7 @@ from pydantic import ValidationError
 from .const import API_CHART, API_LOGIN, API_PODS, API_REGISTRY, PODS_CACHE_TTL
 from .models import (
     REGISTRY_COLUMNS,
+    REGISTRY_COLUMNS_BASE,
     AuthResponse,
     ChartData,
     PointOfDelivery,
@@ -93,6 +94,8 @@ class SsdImsApiClient:
         self._password: str | None = None
         self._pods_cache: list[PointOfDelivery] | None = None
         self._pods_cache_ts: datetime | None = None
+        # Portal rejected actualConsumptionMin — use BASE columns until restart.
+        self._registry_min_unsupported = False
 
     async def authenticate(self, username: str, password: str) -> bool:
         """Authenticate with SSD IMS portal.
@@ -432,40 +435,32 @@ class SsdImsApiClient:
                 _LOGGER.error("  %s: %s", field, sample_info)
             raise RuntimeError(f"Chart data validation failed: {str(e)}") from e
 
-    async def get_registry_data(
+    @staticmethod
+    def _is_registry_column_rejection(exc: Exception) -> bool:
+        """True for clear bad-request responses (unknown column), not 5xx."""
+        message = str(exc)
+        return "API error: 400" in message or "API error: 422" in message
+
+    def _registry_payload(
         self,
-        pod_id: str,
-        from_date: datetime,
-        to_date: datetime,
-    ) -> list[RegistryReading]:
-        """Get meter register readings (Registrové údaje) for a period.
-
-        The endpoint is a generic portal grid: it only returns values for the
-        columns named in the request, as a positional ``values`` array per
-        row. Readings are returned sorted by ``reading_time``; rows that
-        can't be parsed are skipped with a warning.
-        """
-        if not self._authenticated:
-            raise SsdImsAuthenticationError("Not authenticated")
-
-        target_pod = await self._get_pod_by_stable_id(pod_id)
-        if not target_pod:
-            raise RuntimeError(f"POD not found for stable ID: {pod_id}")
-
-        from_utc = from_date.astimezone(UTC).strftime("%Y-%m-%dT%H:%M:%S.000Z")
-        to_utc = to_date.astimezone(UTC).strftime("%Y-%m-%dT%H:%M:%S.000Z")
-        payload = {
+        session_pod_value: str,
+        from_utc: str,
+        to_utc: str,
+        columns: tuple[str, ...],
+    ) -> dict[str, Any]:
+        """Build the portal grid request for register readings."""
+        return {
             "page": {"totalRows": 0, "currentPage": 1, "pageSize": 500},
             "columns": [
                 {"member": member, "index": index, "isVisible": True}
-                for index, member in enumerate(REGISTRY_COLUMNS)
+                for index, member in enumerate(columns)
             ],
             "filters": [
                 {
                     "member": "pointOfDeliveryId",
                     "operator": "Equals",
                     "type": "Int",
-                    "value": target_pod.value,
+                    "value": session_pod_value,
                 },
                 {
                     "member": "billingPeriodEndDatetime",
@@ -488,9 +483,63 @@ class SsdImsApiClient:
             "isExport": False,
         }
 
-        data = await self._retry_request_with_backoff(
-            "POST", API_REGISTRY, json=payload
+    async def get_registry_data(
+        self,
+        pod_id: str,
+        from_date: datetime,
+        to_date: datetime,
+    ) -> list[RegistryReading]:
+        """Get meter register readings (Registrové údaje) for a period.
+
+        The endpoint is a generic portal grid: it only returns values for the
+        columns named in the request, as a positional ``values`` array per
+        row. Readings are returned sorted by ``reading_time``; rows that
+        can't be parsed are skipped with a warning. Prefers
+        ``actualConsumptionMin``; on a clear 400/422 rejection retries once
+        without that column and remembers for the process lifetime.
+        """
+        if not self._authenticated:
+            raise SsdImsAuthenticationError("Not authenticated")
+
+        target_pod = await self._get_pod_by_stable_id(pod_id)
+        if not target_pod:
+            raise RuntimeError(f"POD not found for stable ID: {pod_id}")
+
+        from_utc = from_date.astimezone(UTC).strftime("%Y-%m-%dT%H:%M:%S.000Z")
+        to_utc = to_date.astimezone(UTC).strftime("%Y-%m-%dT%H:%M:%S.000Z")
+        columns: tuple[str, ...] = (
+            REGISTRY_COLUMNS_BASE
+            if self._registry_min_unsupported
+            else REGISTRY_COLUMNS
         )
+        payload = self._registry_payload(target_pod.value, from_utc, to_utc, columns)
+
+        try:
+            data = await self._retry_request_with_backoff(
+                "POST", API_REGISTRY, json=payload
+            )
+        except RuntimeError as err:
+            if (
+                not self._registry_min_unsupported
+                and columns == REGISTRY_COLUMNS
+                and self._is_registry_column_rejection(err)
+            ):
+                _LOGGER.warning(
+                    "Registry rejected actualConsumptionMin (%s); "
+                    "retrying without min column",
+                    err,
+                )
+                self._registry_min_unsupported = True
+                columns = REGISTRY_COLUMNS_BASE
+                payload = self._registry_payload(
+                    target_pod.value, from_utc, to_utc, columns
+                )
+                data = await self._retry_request_with_backoff(
+                    "POST", API_REGISTRY, json=payload
+                )
+            else:
+                raise
+
         if not isinstance(data, dict) or not isinstance(data.get("rows"), list):
             _LOGGER.error(
                 "Unexpected registry data response format: %s", type(data).__name__
@@ -509,7 +558,7 @@ class SsdImsApiClient:
         for row in rows:
             values = row.get("values") if isinstance(row, dict) else None
             try:
-                readings.append(RegistryReading.from_row(values or []))
+                readings.append(RegistryReading.from_row(values or [], columns))
             except (ValidationError, ValueError, TypeError) as e:
                 # Log the error, not the row: it contains the meter serial.
                 _LOGGER.warning(

@@ -106,9 +106,21 @@ Každé odberné miesto je samostatné zariadenie. Jeho EIC kód nájdete na str
 | `sensor.<názov>_high_tariff_meter_reading` | Posledný mesačný stav registra VT, 1.8.1 (kWh) |
 | `sensor.<názov>_low_tariff_meter_reading` | Posledný mesačný stav registra NT, 1.8.2 (kWh) |
 | `sensor.<názov>_peak_demand` | Maximálny štvrťhodinový výkon za posledné obdobie, 1.6.0 (kW) |
+| `sensor.<názov>_low_demand` | Minimálny štvrťhodinový výkon za posledné obdobie (register), ak portál hodnotu vracia (kW) |
 | `sensor.<názov>_last_update` | Čas poslednej aktualizácie |
 
 Entity registrov majú atribúty `reading_time` (čas odpočtu) a `meter_serial_number` (výrobné číslo elektromera).
+
+Voliteľné trendové senzory sú **predvolene vypnuté** (zapnete ich na stránke zariadenia cez zobrazenie vypnutých entít). Počítajú sa z včerajšieho grafu a už importovaných hodinových štatistík — bez ďalších volaní portálu:
+
+| Entita | Popis |
+|--------|-------|
+| `sensor.<názov>_low_demand_yesterday` | Najnižší štvrťhodinový výkon včera (kW) |
+| `sensor.<názov>_load_factor_yesterday` | Priemerný / špičkový výkon včera (%); špička je z grafu, nie mesačný Peak Demand |
+| `sensor.<názov>_peak_hour_yesterday` | Hodina (0–23) s najvyššou spotrebou včera |
+| `sensor.<názov>_wow_delta` | Rozdiel spotreby oproti rovnakému dňu pred týždňom (kWh); atribút `wow_percent` |
+| `sensor.<názov>_avg_consumption_7d` / `_30d` | Priemerná denná spotreba za dni, ktoré majú údaje (kWh/d) |
+| `sensor.<názov>_export_share_yesterday` | Podiel dodávky do siete = dodávka / (spotreba + dodávka) včera (%). Nie je to autarkia — portál nemá výrobu FVE, len odber a dodávku do siete. |
 
 | Štatistika | Popis |
 |------------|-------|

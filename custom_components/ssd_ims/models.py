@@ -159,10 +159,21 @@ class ChartData(BaseModel):
 # Columns requested from the registry-data grid endpoint, in order. The
 # portal only returns values for the columns listed in the request, as a
 # positional ``values`` array per row.
+REGISTRY_COLUMNS_BASE: tuple[str, ...] = (
+    "serialNumber",
+    "billingPeriodEndDatetime",
+    "actualConsumptionMax",
+    "actualConsumptionTotal",
+    "actualConsumptionTariff1",
+    "actualConsumptionTariff2",
+    "actualSupplyTotal",
+)
+# Prefer requesting min after max; fall back to BASE if the portal rejects it.
 REGISTRY_COLUMNS: tuple[str, ...] = (
     "serialNumber",
     "billingPeriodEndDatetime",
     "actualConsumptionMax",
+    "actualConsumptionMin",
     "actualConsumptionTotal",
     "actualConsumptionTariff1",
     "actualConsumptionTariff2",
@@ -175,30 +186,47 @@ class RegistryReading(BaseModel):
 
     Energy values are cumulative meter counters (OBIS 1.8.x / 2.8.0), not
     per-period totals; ``max_demand`` (1.6.0) is the peak quarter-hour
-    demand of the period ending at ``reading_time``.
+    demand of the period ending at ``reading_time``. ``min_demand`` is the
+    matching low when the portal returns ``actualConsumptionMin``.
     """
 
     serial_number: str
     reading_time: datetime
     max_demand: float | None = None
+    min_demand: float | None = None
     consumption_total: float | None = None
     consumption_tariff1: float | None = None
     consumption_tariff2: float | None = None
     supply_total: float | None = None
 
     @classmethod
-    def from_row(cls, values: list[Any]) -> "RegistryReading":
-        """Build a reading from a positional row aligned with REGISTRY_COLUMNS."""
-        if len(values) < len(REGISTRY_COLUMNS):
+    def from_row(
+        cls,
+        values: list[Any],
+        columns: tuple[str, ...] | None = None,
+    ) -> "RegistryReading":
+        """Build a reading from a positional row aligned with the columns used."""
+        if columns is None:
+            if len(values) >= len(REGISTRY_COLUMNS):
+                columns = REGISTRY_COLUMNS
+            elif len(values) >= len(REGISTRY_COLUMNS_BASE):
+                columns = REGISTRY_COLUMNS_BASE
+            else:
+                raise ValueError(
+                    f"Registry row has {len(values)} values, "
+                    f"expected at least {len(REGISTRY_COLUMNS_BASE)}: {values!r}"
+                )
+        elif len(values) < len(columns):
             raise ValueError(
                 f"Registry row has {len(values)} values, "
-                f"expected {len(REGISTRY_COLUMNS)}: {values!r}"
+                f"expected {len(columns)}: {values!r}"
             )
-        row = dict(zip(REGISTRY_COLUMNS, values, strict=False))
+        row = dict(zip(columns, values, strict=False))
         return cls(
             serial_number=str(row["serialNumber"] or ""),
             reading_time=row["billingPeriodEndDatetime"],
             max_demand=row["actualConsumptionMax"],
+            min_demand=row.get("actualConsumptionMin"),
             consumption_total=row["actualConsumptionTotal"],
             consumption_tariff1=row["actualConsumptionTariff1"],
             consumption_tariff2=row["actualConsumptionTariff2"],

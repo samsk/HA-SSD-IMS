@@ -199,6 +199,61 @@ def aggregate_chart_day(
     )
 
 
+@dataclass(frozen=True)
+class ChartDayTrends:
+    """Yesterday chart extremes and load factor (complete days only)."""
+
+    low_demand_kw: float
+    peak_chart_kw: float
+    load_factor_pct: float | None
+    peak_hour: int
+
+
+def chart_day_trends(
+    chart_data: ChartData,
+    values: list[float],
+    day_start: datetime,
+    day_end: datetime,
+) -> ChartDayTrends | None:
+    """Min/max quarter kW, peak hour, load factor for a complete local day.
+
+    Returns None when the day is incomplete or has no in-day quarters.
+    """
+    expected = expected_quarters(day_start, day_end)
+    quarter_kws: list[float] = []
+    hourly: dict[datetime, float] = {}
+
+    for i, timestamp_str in enumerate(chart_data.metering_datetime):
+        timestamp_end_utc = parse_chart_timestamp(timestamp_str)
+        timestamp_start_utc = timestamp_end_utc - QUARTER_HOURS
+        if not day_start <= timestamp_start_utc < day_end:
+            continue
+        quarter_kws.append(values[i])
+        hour_timestamp = timestamp_start_utc.replace(minute=0, second=0, microsecond=0)
+        hourly[hour_timestamp] = hourly.get(hour_timestamp, 0.0) + values[i] * 0.25
+
+    if not quarter_kws or len(quarter_kws) != expected:
+        return None
+
+    low_kw = min(quarter_kws)
+    peak_kw = max(quarter_kws)
+    peak_hour_start = max(hourly, key=hourly.get)
+    local_peak = peak_hour_start.astimezone(day_start.tzinfo)
+    hour_count = len(hourly)
+    total_kwh = sum(hourly.values())
+    load_factor_pct = (
+        (total_kwh / hour_count) / peak_kw * 100.0
+        if peak_kw > 0 and hour_count
+        else None
+    )
+    return ChartDayTrends(
+        low_demand_kw=low_kw,
+        peak_chart_kw=peak_kw,
+        load_factor_pct=load_factor_pct,
+        peak_hour=local_peak.hour,
+    )
+
+
 def validate_registry_readings(readings: list[RegistryReading]) -> None:
     """Raise InvalidRegistryData when register readings are structurally wrong."""
     previous: datetime | None = None
@@ -217,6 +272,7 @@ def validate_registry_readings(readings: list[RegistryReading]) -> None:
         previous = reading.reading_time
         for attr in (
             "max_demand",
+            "min_demand",
             "consumption_total",
             "consumption_tariff1",
             "consumption_tariff2",

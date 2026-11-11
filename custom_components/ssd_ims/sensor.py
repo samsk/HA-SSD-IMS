@@ -10,7 +10,7 @@ from homeassistant.components.sensor import (
     SensorStateClass,
 )
 from homeassistant.config_entries import ConfigEntry
-from homeassistant.const import UnitOfEnergy, UnitOfPower
+from homeassistant.const import PERCENTAGE, UnitOfEnergy, UnitOfPower
 from homeassistant.core import HomeAssistant
 from homeassistant.helpers.device_registry import DeviceInfo
 from homeassistant.helpers.entity_platform import AddEntitiesCallback
@@ -47,13 +47,17 @@ async def async_setup_entry(
 
     enabled_sensor_types = [SENSOR_TYPE_ACTUAL_CONSUMPTION, SENSOR_TYPE_ACTUAL_SUPPLY]
 
-    sensors = []
+    sensors: list[SensorEntity] = []
     for pod_id in pod_ids:
         friendly_name = pod_name_mapping.get(pod_id, pod_id)
         sensors.append(SsdImsLastUpdateSensor(coordinator, pod_id, friendly_name))
         sensors.extend(
             SsdImsRegisterSensor(coordinator, pod_id, friendly_name, description)
             for description in REGISTER_SENSORS
+        )
+        sensors.extend(
+            SsdImsTrendSensor(coordinator, pod_id, friendly_name, description)
+            for description in TREND_SENSORS
         )
         for sensor_type in enabled_sensor_types:
             sensors.append(
@@ -240,6 +244,70 @@ REGISTER_SENSORS: tuple[tuple[str, str, str, bool], ...] = (
     ("consumption_vt", "High Tariff Meter Reading", "meter_reading_vt", True),
     ("consumption_nt", "Low Tariff Meter Reading", "meter_reading_nt", True),
     ("max_demand", "Peak Demand", "peak_demand", False),
+    ("min_demand", "Low Demand", "low_demand", False),
+)
+
+# (trends key, translation_key, unique-id suffix, unit, device_class, as_int)
+TREND_SENSORS: tuple[
+    tuple[str, str, str, str | None, SensorDeviceClass | None, bool],
+    ...,
+] = (
+    (
+        "low_demand_kw",
+        "low_demand_yesterday",
+        "low_demand_yesterday",
+        UnitOfPower.KILO_WATT,
+        SensorDeviceClass.POWER,
+        False,
+    ),
+    (
+        "load_factor_pct",
+        "load_factor_yesterday",
+        "load_factor_yesterday",
+        PERCENTAGE,
+        None,
+        False,
+    ),
+    (
+        "peak_hour",
+        "peak_hour_yesterday",
+        "peak_hour_yesterday",
+        None,
+        None,
+        True,
+    ),
+    (
+        "wow_delta_kwh",
+        "wow_delta",
+        "wow_delta",
+        UnitOfEnergy.KILO_WATT_HOUR,
+        SensorDeviceClass.ENERGY,
+        False,
+    ),
+    (
+        "avg_7d_kwh",
+        "avg_consumption_7d",
+        "avg_consumption_7d",
+        f"{UnitOfEnergy.KILO_WATT_HOUR}/d",
+        None,
+        False,
+    ),
+    (
+        "avg_30d_kwh",
+        "avg_consumption_30d",
+        "avg_consumption_30d",
+        f"{UnitOfEnergy.KILO_WATT_HOUR}/d",
+        None,
+        False,
+    ),
+    (
+        "export_share_pct",
+        "export_share_yesterday",
+        "export_share_yesterday",
+        PERCENTAGE,
+        None,
+        False,
+    ),
 )
 
 
@@ -299,3 +367,72 @@ class SsdImsRegisterSensor(SsdImsSensor):
             "reading_time": registry.get("reading_time"),
             "meter_serial_number": registry.get("serial_number"),
         }
+
+
+class SsdImsTrendSensor(SsdImsSensor):
+    """Optional virtual trend from yesterday chart or HA statistics."""
+
+    _attr_entity_registry_enabled_default = False
+
+    def __init__(
+        self,
+        coordinator: SsdImsDataCoordinator,
+        pod_id: str,
+        friendly_name: str,
+        description: tuple[str, str, str, str | None, SensorDeviceClass | None, bool],
+    ) -> None:
+        """Initialize a default-disabled trend sensor."""
+        super().__init__(coordinator, pod_id, friendly_name)
+        (
+            self._data_key,
+            translation_key,
+            unique_suffix,
+            unit,
+            device_class,
+            self._as_int,
+        ) = description
+        self._attr_translation_key = translation_key
+        self._attr_unique_id = f"{pod_id}_{unique_suffix}"
+        self._attr_native_unit_of_measurement = unit
+        self._attr_device_class = device_class
+        if device_class == SensorDeviceClass.POWER:
+            self._attr_state_class = SensorStateClass.MEASUREMENT
+        elif (
+            device_class == SensorDeviceClass.ENERGY
+            and self._data_key == "wow_delta_kwh"
+        ):
+            # Signed daily delta — not a running total.
+            self._attr_state_class = None
+        elif unit == PERCENTAGE:
+            self._attr_state_class = SensorStateClass.MEASUREMENT
+
+    def _trends(self) -> dict[str, Any] | None:
+        if not self.coordinator.data or not (
+            pod_data := self.coordinator.data.get(self.pod_id)
+        ):
+            return None
+        return pod_data.get("trends")
+
+    @property
+    def native_value(self) -> StateType | None:
+        """Return the trend value, or None when unknown."""
+        if not (trends := self._trends()):
+            return None
+        value = trends.get(self._data_key)
+        if value is None:
+            return None
+        if self._as_int:
+            return int(value)
+        return float(value)
+
+    @property
+    def extra_state_attributes(self) -> dict[str, Any] | None:
+        """Attach WoW percent on the week-over-week delta sensor."""
+        if self._data_key != "wow_delta_kwh":
+            return None
+        if not (trends := self._trends()):
+            return None
+        percent = trends.get("wow_percent")
+        if percent is None:
+            return None
+        return {"wow_percent": round(float(percent), 2)}

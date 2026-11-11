@@ -1,5 +1,11 @@
 # Changelog
 
+## Version 3.0.0b4
+
+- **New feature**: **Low Demand** register sensor when the portal returns `actualConsumptionMin` (falls back cleanly if the column is unsupported)
+- **New feature**: Optional virtual trend sensors (off by default): low demand / load factor / peak hour / export share yesterday from the chart, plus week-over-week delta and 7/30-day average consumption from imported statistics
+- **Bug fix**: A failed yesterday chart fetch for one POD no longer dropped that POD's last good yesterday totals and trend values
+
 ## Version 3.0.0b3
 
 - **Bug fix**: **Cloud link** was registered on a separate account-level device. It is now attached to the first Point of Delivery device (same login for the whole account)

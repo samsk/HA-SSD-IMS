@@ -58,6 +58,7 @@ from .helpers import (
     PriceHistory,
     aggregate_chart_day,
     calculate_yesterday_range,
+    chart_day_trends,
     sanitize_name,
     validate_chart_structure,
     validate_registry_readings,
@@ -219,6 +220,15 @@ class SsdImsDataCoordinator(DataUpdateCoordinator):
                 if not pod:
                     continue
 
+                pod_data = all_pod_data.setdefault(pod_id, {})
+                previous_pod = (self.data or {}).get(pod_id, {})
+                if previous_trends := previous_pod.get("trends"):
+                    pod_data["trends"] = dict(previous_trends)
+                if previous_agg := previous_pod.get("aggregated_data"):
+                    pod_data["aggregated_data"] = previous_agg
+                if previous_update := previous_pod.get("last_update"):
+                    pod_data["last_update"] = previous_update
+
                 try:
                     period_start, period_end = calculate_yesterday_range(now)
                     chart_data = await self.api_client.get_chart_data(
@@ -232,19 +242,15 @@ class SsdImsDataCoordinator(DataUpdateCoordinator):
                     )
                     continue
 
-                pod_data = all_pod_data.setdefault(pod_id, {})
                 aggregated = self._aggregate_data(chart_data)
-                if aggregated is None:
-                    # Keep the last good yesterday totals on invalid data.
-                    previous = (self.data or {}).get(pod_id, {}).get("aggregated_data")
-                    if previous is not None:
-                        pod_data["aggregated_data"] = previous
-                else:
+                if aggregated is not None:
                     pod_data["aggregated_data"] = aggregated
+                    self._merge_chart_trends(pod_data, chart_data, aggregated)
                 pod_data["last_update"] = now.isoformat()
 
             self._reprice_requested = False
             await self._update_registry(pod_ids, all_pod_data, today)
+            await self._update_consumption_trends(pod_ids, all_pod_data)
             await self._update_hourly_costs(pod_ids)
             self._watch_supplier_prices(pod_ids)
 
@@ -843,6 +849,7 @@ class SsdImsDataCoordinator(DataUpdateCoordinator):
                         "consumption_nt": latest.consumption_tariff2,
                         "consumption_total": latest.consumption_total,
                         "max_demand": latest.max_demand,
+                        "min_demand": latest.min_demand,
                     }
                 except InvalidRegistryData as e:
                     all_ok = False
@@ -1418,3 +1425,157 @@ class SsdImsDataCoordinator(DataUpdateCoordinator):
             ).total_kwh
             for sensor_type in ENABLED_SENSOR_TYPES
         }
+
+    def _merge_chart_trends(
+        self,
+        pod_data: dict[str, Any],
+        chart_data: ChartData | None,
+        aggregated: dict[str, float],
+    ) -> None:
+        """Fill chart-based trend keys when yesterday's series is complete."""
+        if chart_data is None or not chart_data.metering_datetime:
+            return
+        now = dt_util.now()
+        day_start = now.replace(hour=0, minute=0, second=0, microsecond=0) - timedelta(
+            days=1
+        )
+        day_end = day_start + timedelta(days=1)
+        trends = chart_day_trends(
+            chart_data,
+            self._sensor_values(chart_data, SENSOR_TYPE_ACTUAL_CONSUMPTION),
+            day_start,
+            day_end,
+        )
+        if trends is None:
+            # Incomplete day — keep previous chart keys; do not overwrite.
+            return
+        merged = pod_data.setdefault("trends", {})
+        merged["low_demand_kw"] = trends.low_demand_kw
+        merged["peak_chart_kw"] = trends.peak_chart_kw
+        merged["load_factor_pct"] = trends.load_factor_pct
+        merged["peak_hour"] = trends.peak_hour
+        cons = float(aggregated.get(SENSOR_TYPE_ACTUAL_CONSUMPTION) or 0.0)
+        supply = float(aggregated.get(SENSOR_TYPE_ACTUAL_SUPPLY) or 0.0)
+        if supply > 0:
+            merged["export_share_pct"] = supply / (cons + supply) * 100.0
+        else:
+            merged.pop("export_share_pct", None)
+
+    async def _update_consumption_trends(
+        self, pod_ids: list[str], all_pod_data: dict[str, Any]
+    ) -> None:
+        """WoW delta and 7/30-day averages from imported hourly statistics."""
+        now = dt_util.now()
+        today_start = now.replace(hour=0, minute=0, second=0, microsecond=0)
+        yesterday = (today_start - timedelta(days=1)).date()
+        window_start = today_start - timedelta(days=31)
+
+        for pod_id in pod_ids:
+            if pod_id not in self.pods:
+                continue
+            pod_name = self.config.get(CONF_POD_NAME_MAPPING, {}).get(pod_id, pod_id)
+            statistic_id = self._build_statistic_id(
+                pod_name, SENSOR_TYPE_ACTUAL_CONSUMPTION
+            )
+            try:
+                daily = await self._daily_kwh_from_statistics(
+                    statistic_id, window_start, today_start
+                )
+            except Exception as err:
+                _LOGGER.warning(
+                    "Could not read trend statistics for %s: %s", statistic_id, err
+                )
+                continue
+
+            trends = all_pod_data.setdefault(pod_id, {}).setdefault("trends", {})
+            yesterday_kwh = daily.get(yesterday)
+            prior_week = daily.get(yesterday - timedelta(days=7))
+            if yesterday_kwh is not None and prior_week is not None:
+                trends["wow_delta_kwh"] = yesterday_kwh - prior_week
+                trends["wow_percent"] = (
+                    (yesterday_kwh - prior_week) / prior_week * 100.0
+                    if prior_week != 0
+                    else None
+                )
+            else:
+                trends.pop("wow_delta_kwh", None)
+                trends.pop("wow_percent", None)
+
+            for key, days in (("avg_7d_kwh", 7), ("avg_30d_kwh", 30)):
+                values = [
+                    daily[d]
+                    for offset in range(1, days + 1)
+                    if (d := (today_start - timedelta(days=offset)).date()) in daily
+                ]
+                if values:
+                    trends[key] = sum(values) / len(values)
+                else:
+                    trends.pop(key, None)
+
+    async def _daily_kwh_from_statistics(
+        self,
+        statistic_id: str,
+        window_start: datetime,
+        today_start: datetime,
+    ) -> dict[date, float]:
+        """Map local calendar days to kWh from cumulative hourly sums.
+
+        A day counts only when it has hours and a prior day's last sum as
+        baseline; missing days are omitted (not zero-filled).
+        """
+        recorder = get_instance(self.hass)
+        fetch_from = window_start - timedelta(days=1)
+
+        def _fetch() -> list[dict[str, Any]]:
+            result = statistics_during_period(
+                self.hass,
+                fetch_from,
+                today_start,
+                {statistic_id},
+                "hour",
+                None,
+                {"sum"},
+            )
+            return result.get(statistic_id, [])
+
+        rows = await recorder.async_add_executor_job(_fetch)
+        if not rows:
+            return {}
+
+        def _ts(value: Any) -> datetime:
+            if isinstance(value, (int, float)):
+                return dt_util.utc_from_timestamp(value)
+            return value
+
+        daily: dict[date, float] = {}
+        last_before: float | None = None
+        prev_day: date | None = None
+        last_in_day: float | None = None
+        window_date = window_start.date()
+
+        for row in rows:
+            start = _ts(row["start"]).astimezone(today_start.tzinfo)
+            if start >= today_start:
+                continue
+            day = start.date()
+            sum_val = float(row["sum"] or 0.0)
+            if prev_day is None:
+                prev_day = day
+                last_in_day = sum_val
+                continue
+            if day != prev_day:
+                if last_before is not None and last_in_day is not None:
+                    if prev_day >= window_date:
+                        daily[prev_day] = last_in_day - last_before
+                last_before = last_in_day
+                prev_day = day
+            last_in_day = sum_val
+
+        if (
+            prev_day is not None
+            and last_before is not None
+            and last_in_day is not None
+            and prev_day >= window_date
+        ):
+            daily[prev_day] = last_in_day - last_before
+        return daily

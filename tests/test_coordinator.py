@@ -700,3 +700,125 @@ class TestImportSafety:
         # 96 in-day quarters × 4 kW × 0.25 = 96 kWh (boundary excluded).
         assert aggregated["actual_consumption"] == pytest.approx(96.0)
         assert aggregated["actual_supply"] == pytest.approx(96.0)
+
+
+class TestConsumptionTrends:
+    async def test_daily_kwh_from_cumulative_sums(self):
+        tz = dt_util.get_time_zone("Europe/Bratislava")
+        today_start = datetime(2026, 11, 10, tzinfo=tz)
+        window_start = today_start - timedelta(days=3)
+        # Hours spanning 7th (baseline), 8th (10 kWh), 9th (5 kWh)
+        rows = [
+            {"start": datetime(2026, 11, 7, 22, tzinfo=tz), "sum": 100.0},
+            {"start": datetime(2026, 11, 7, 23, tzinfo=tz), "sum": 110.0},
+            {"start": datetime(2026, 11, 8, 0, tzinfo=tz), "sum": 112.0},
+            {"start": datetime(2026, 11, 8, 23, tzinfo=tz), "sum": 120.0},
+            {"start": datetime(2026, 11, 9, 12, tzinfo=tz), "sum": 125.0},
+        ]
+        coordinator = _make_coordinator(MagicMock(), {})
+        recorder = MagicMock()
+        recorder.async_add_executor_job = AsyncMock(
+            side_effect=lambda fn, *a, **k: fn(*a, **k)
+        )
+
+        with (
+            patch(
+                "custom_components.ssd_ims.coordinator.get_instance",
+                return_value=recorder,
+            ),
+            patch(
+                "custom_components.ssd_ims.coordinator.statistics_during_period",
+                return_value={"ssd_ims:home_actual_consumption": rows},
+            ),
+        ):
+            daily = await coordinator._daily_kwh_from_statistics(
+                "ssd_ims:home_actual_consumption", window_start, today_start
+            )
+
+        assert daily[datetime(2026, 11, 8).date()] == pytest.approx(10.0)
+        assert daily[datetime(2026, 11, 9).date()] == pytest.approx(5.0)
+        assert datetime(2026, 11, 7).date() not in daily
+
+    def test_merge_chart_trends_complete_and_incomplete(self):
+        tz = dt_util.get_time_zone("Europe/Bratislava")
+        day_start = datetime(2026, 10, 23, tzinfo=tz)
+        day_end = day_start + timedelta(days=1)
+        chart = _portal_chart_data(
+            day_start.astimezone(UTC), day_end.astimezone(UTC), include_from=False
+        )
+        coordinator = _make_coordinator(MagicMock(), {})
+        pod_data: dict = {
+            "trends": {"low_demand_kw": 9.9, "peak_hour": 1},
+            "aggregated_data": {
+                "actual_consumption": 96.0,
+                "actual_supply": 10.0,
+            },
+        }
+        with patch(
+            "custom_components.ssd_ims.coordinator.dt_util.now",
+            return_value=datetime(2026, 10, 24, 10, 0, tzinfo=tz),
+        ):
+            coordinator._merge_chart_trends(
+                pod_data, chart, pod_data["aggregated_data"]
+            )
+
+        assert pod_data["trends"]["low_demand_kw"] == 4.0
+        assert pod_data["trends"]["peak_chart_kw"] == 4.0
+        assert pod_data["trends"]["peak_hour"] == 0
+        assert pod_data["trends"]["export_share_pct"] == pytest.approx(
+            10.0 / 106.0 * 100
+        )
+
+        # Incomplete: keep previous chart keys
+        pod_data = {
+            "trends": {"low_demand_kw": 1.5, "peak_hour": 7},
+            "aggregated_data": {
+                "actual_consumption": 1.0,
+                "actual_supply": 0.0,
+            },
+        }
+        short = _chart_data(day_start, value=1.0)
+        with patch(
+            "custom_components.ssd_ims.coordinator.dt_util.now",
+            return_value=datetime(2026, 10, 24, 10, 0, tzinfo=tz),
+        ):
+            coordinator._merge_chart_trends(
+                pod_data, short, pod_data["aggregated_data"]
+            )
+        assert pod_data["trends"]["low_demand_kw"] == 1.5
+        assert pod_data["trends"]["peak_hour"] == 7
+
+    async def test_chart_fetch_failure_keeps_previous_yesterday(self):
+        pod = PointOfDelivery(text="99XXX1234560000G (Home)", value="v1")
+        api_client = MagicMock()
+        api_client.get_chart_data = AsyncMock(side_effect=RuntimeError("timeout"))
+        coordinator = _make_coordinator(api_client, {})
+        coordinator.pods = {pod.id: pod}
+        coordinator.data = {
+            pod.id: {
+                "aggregated_data": {
+                    "actual_consumption": 12.0,
+                    "actual_supply": 1.0,
+                },
+                "trends": {"low_demand_kw": 0.4, "peak_hour": 18},
+                "last_update": "2026-11-10T10:00:00+01:00",
+            }
+        }
+        coordinator._update_statistics = AsyncMock(return_value=False)
+        coordinator._fetch_cumulative_totals_from_statistics = AsyncMock()
+        coordinator._update_registry = AsyncMock()
+        coordinator._update_consumption_trends = AsyncMock()
+        coordinator._update_hourly_costs = AsyncMock()
+        coordinator._watch_supplier_prices = MagicMock()
+
+        tz = dt_util.get_time_zone("Europe/Bratislava")
+        with patch(
+            "custom_components.ssd_ims.coordinator.dt_util.now",
+            return_value=datetime(2026, 11, 11, 10, 0, tzinfo=tz),
+        ):
+            result = await coordinator._async_update_data()
+
+        pod_data = result[pod.id]
+        assert pod_data["aggregated_data"]["actual_consumption"] == 12.0
+        assert pod_data["trends"]["low_demand_kw"] == 0.4
+        assert pod_data["last_update"] == "2026-11-10T10:00:00+01:00"

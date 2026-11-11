@@ -109,6 +109,29 @@
       "cloud_link": {
         "name": "Spojenie s cloudom"
       }
+    },
+    "sensor": {
+      "low_demand_yesterday": {
+        "name": "Nízky výkon včera"
+      },
+      "load_factor_yesterday": {
+        "name": "Zaťaženie včera"
+      },
+      "peak_hour_yesterday": {
+        "name": "Hodina špičky včera"
+      },
+      "wow_delta": {
+        "name": "Oproti minulému týždňu"
+      },
+      "avg_consumption_7d": {
+        "name": "7-dňový priemer"
+      },
+      "avg_consumption_30d": {
+        "name": "30-dňový priemer"
+      },
+      "export_share_yesterday": {
+        "name": "Podiel dodávky včera"
+      }
     }
   },
   "selector": {

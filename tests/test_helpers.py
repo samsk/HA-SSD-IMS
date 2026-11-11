@@ -10,6 +10,7 @@ from custom_components.ssd_ims.helpers import (
     InvalidRegistryData,
     aggregate_chart_day,
     calculate_yesterday_range,
+    chart_day_trends,
     expected_quarters,
     sanitize_name,
     validate_chart_structure,
@@ -187,6 +188,42 @@ class TestAggregateChartDay:
         assert day.quarter_count == 1
         assert day.total_kwh == pytest.approx(1.0)
         assert day.complete is False
+
+
+class TestChartDayTrends:
+    def test_complete_day_min_peak_hour_load_factor(self):
+        tz = ZoneInfo("Europe/Bratislava")
+        day_start = datetime(2026, 10, 23, tzinfo=tz)
+        day_end = day_start + timedelta(days=1)
+        stamps = []
+        values = []
+        for i in range(96):
+            end = day_start + timedelta(minutes=15 * (i + 1))
+            stamps.append(end.astimezone(UTC).strftime("%Y-%m-%dT%H:%M:%S+00:00"))
+            values.append(2.0)
+        # Quarter starting 03:00 (index 12) → 0 kW; 14:00 (index 56) → 8 kW
+        values[12] = 0.0
+        values[56] = 8.0
+        chart = _chart(stamps, values, [0.0] * 96)
+        trends = chart_day_trends(chart, values, day_start, day_end)
+        assert trends is not None
+        assert trends.low_demand_kw == 0.0
+        assert trends.peak_chart_kw == 8.0
+        assert trends.peak_hour == 14
+        # 94×2×0.25 + 0 + 8×0.25 = 47 + 2 = 49 kWh; hours=24
+        assert trends.load_factor_pct == pytest.approx((49.0 / 24) / 8 * 100)
+
+    def test_incomplete_day_returns_none(self):
+        tz = ZoneInfo("Europe/Bratislava")
+        day_start = datetime(2026, 10, 23, tzinfo=tz)
+        day_end = day_start + timedelta(days=1)
+        stamps = [
+            (day_start + timedelta(minutes=15))
+            .astimezone(UTC)
+            .strftime("%Y-%m-%dT%H:%M:%S+00:00")
+        ]
+        chart = _chart(stamps, [1.0], [0.0])
+        assert chart_day_trends(chart, [1.0], day_start, day_end) is None
 
 
 class TestValidateRegistry:

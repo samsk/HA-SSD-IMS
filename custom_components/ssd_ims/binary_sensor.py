@@ -35,9 +35,7 @@ async def async_setup_entry(
     # Login is per account — one sensor, attached to the first POD device so
     # Home Assistant does not create a separate account-level device.
     pod_id = pod_ids[0]
-    friendly_name = config_entry.data.get(CONF_POD_NAME_MAPPING, {}).get(
-        pod_id, pod_id
-    )
+    friendly_name = config_entry.data.get(CONF_POD_NAME_MAPPING, {}).get(pod_id, pod_id)
     async_add_entities(
         [SsdImsCloudLinkSensor(coordinator, config_entry, pod_id, friendly_name)]
     )

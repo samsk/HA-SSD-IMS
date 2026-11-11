@@ -109,6 +109,29 @@
       "cloud_link": {
         "name": "Cloud link"
       }
+    },
+    "sensor": {
+      "low_demand_yesterday": {
+        "name": "Low demand yesterday"
+      },
+      "load_factor_yesterday": {
+        "name": "Load factor yesterday"
+      },
+      "peak_hour_yesterday": {
+        "name": "Peak hour yesterday"
+      },
+      "wow_delta": {
+        "name": "vs last week"
+      },
+      "avg_consumption_7d": {
+        "name": "7-day average"
+      },
+      "avg_consumption_30d": {
+        "name": "30-day average"
+      },
+      "export_share_yesterday": {
+        "name": "Export share yesterday"
+      }
     }
   },
   "selector": {
