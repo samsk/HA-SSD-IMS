@@ -12,7 +12,13 @@ from homeassistant.core import HomeAssistant
 from homeassistant.helpers.device_registry import DeviceInfo
 from homeassistant.helpers.entity_platform import AddEntitiesCallback
 
-from .const import DOMAIN, PORTAL_URL
+from .const import (
+    CONF_POD_NAME_MAPPING,
+    CONF_POINT_OF_DELIVERY,
+    DEFAULT_POINT_OF_DELIVERY,
+    DOMAIN,
+    PORTAL_URL,
+)
 from .coordinator import SsdImsDataCoordinator
 
 
@@ -23,7 +29,18 @@ async def async_setup_entry(
 ) -> None:
     """Set up the cloud-link binary sensor for a config entry."""
     coordinator: SsdImsDataCoordinator = config_entry.runtime_data
-    async_add_entities([SsdImsCloudLinkSensor(coordinator, config_entry)])
+    pod_ids = config_entry.data.get(CONF_POINT_OF_DELIVERY, DEFAULT_POINT_OF_DELIVERY)
+    if not pod_ids:
+        return
+    # Login is per account — one sensor, attached to the first POD device so
+    # Home Assistant does not create a separate account-level device.
+    pod_id = pod_ids[0]
+    friendly_name = config_entry.data.get(CONF_POD_NAME_MAPPING, {}).get(
+        pod_id, pod_id
+    )
+    async_add_entities(
+        [SsdImsCloudLinkSensor(coordinator, config_entry, pod_id, friendly_name)]
+    )
 
 
 class SsdImsCloudLinkSensor(BinarySensorEntity):
@@ -34,16 +51,23 @@ class SsdImsCloudLinkSensor(BinarySensorEntity):
     _attr_device_class = BinarySensorDeviceClass.CONNECTIVITY
     _attr_entity_category = EntityCategory.DIAGNOSTIC
 
-    def __init__(self, coordinator: SsdImsDataCoordinator, entry: ConfigEntry) -> None:
-        """Bind to the entry-scoped coordinator."""
+    def __init__(
+        self,
+        coordinator: SsdImsDataCoordinator,
+        entry: ConfigEntry,
+        pod_id: str,
+        friendly_name: str,
+    ) -> None:
+        """Bind to the first POD device for this entry."""
         self.coordinator = coordinator
         self._attr_unique_id = f"{entry.entry_id}_cloud_link"
         self._attr_device_info = DeviceInfo(
-            identifiers={(DOMAIN, entry.entry_id)},
-            name=entry.title,
+            identifiers={(DOMAIN, pod_id)},
+            name=friendly_name,
             manufacturer="Stredoslovenská distribučná, a.s.",
-            model="SSD IMS",
+            model="Odberné miesto elektriny",
             configuration_url=PORTAL_URL,
+            serial_number=pod_id,
         )
 
     @property
