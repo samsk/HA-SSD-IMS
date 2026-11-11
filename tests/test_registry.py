@@ -136,6 +136,29 @@ class TestGetRegistryData:
                     POD_ID, datetime(2025, 1, 1, tzinfo=UTC), datetime.now(UTC)
                 )
 
+    async def test_truncated_page_raises(self, api_client):
+        from custom_components.ssd_ims.helpers import InvalidRegistryData
+
+        response_body = {
+            "columns": [],
+            "page": {"totalRows": 10, "currentPage": 1, "pageSize": 500},
+            "rows": [
+                {"values": ["M1", "2026-10-31T23:00:00.0000000Z", 3, 30, 3, 27, 0]},
+            ],
+        }
+        with patch.object(api_client._session, "request") as mock_request:
+            mock_response = AsyncMock()
+            mock_response.json = AsyncMock(return_value=response_body)
+            mock_response.status = 200
+            mock_response.headers = {"content-type": "application/json"}
+            mock_request.return_value.__aenter__.return_value = mock_response
+
+            with pytest.raises(InvalidRegistryData) as err:
+                await api_client.get_registry_data(
+                    POD_ID, datetime(2025, 1, 1, tzinfo=UTC), datetime.now(UTC)
+                )
+        assert err.value.reason == "truncated_page"
+
 
 class TestRegistryDeltas:
     def test_hour_aligned_reading_closes_previous_hour(self):
@@ -215,6 +238,8 @@ def _make_coordinator(api_client, config, data=None):
     coordinator.api_client = api_client
     coordinator.config = config
     coordinator.entry = MagicMock()
+    coordinator.entry.entry_id = "test-entry"
+    coordinator.entry.async_create_background_task = MagicMock()
     coordinator.pods = {POD_ID: MagicMock()}
     coordinator._last_successful_data_date = None
     coordinator._stats_lock = asyncio.Lock()
@@ -226,6 +251,8 @@ def _make_coordinator(api_client, config, data=None):
     coordinator._reprice_requested = False
     coordinator._supplier_pod_ids = []
     coordinator._unsub_supplier_registry = None
+    coordinator._import_pause = None
+    coordinator._force_reimport_day = None
     coordinator.data = data
     # No supplier integration installed unless a test says otherwise
     coordinator._supplier_prices = MagicMock(return_value=None)
@@ -352,12 +379,15 @@ class TestRegistryImport:
             f"ssd_ims:{POD_ID.lower()}_consumption_nt",
         }
 
-    async def test_only_newer_deltas_are_appended_to_existing_sum(self):
+    async def test_open_bucket_and_newer_deltas_are_upserted(self):
+        """The last stored bucket is rewritten so a same-hour reading updates it."""
         client = MagicMock()
         client.get_registry_data = AsyncMock(return_value=READINGS)
         coordinator = _make_coordinator(
             client, {CONF_POD_NAME_MAPPING: {POD_ID: "Home"}}
         )
+        # Last stored is the October bucket — it and November must be upserted
+        # with the full rebuilt cumulative sum (10 then 15).
         last = {
             "ssd_ims:home_consumption_vt": {
                 "ssd_ims:home_consumption_vt": [
@@ -372,9 +402,13 @@ class TestRegistryImport:
         _, mock_add_stats = await _run_registry_update(coordinator, last_stats=last)
         vt = _imported(mock_add_stats)["ssd_ims:home_consumption_vt"]
 
-        assert vt == [{"start": datetime(2026, 10, 31, 22, tzinfo=UTC), "sum": 15.0}]
+        assert vt == [
+            {"start": datetime(2026, 9, 30, 21, tzinfo=UTC), "sum": 10.0},
+            {"start": datetime(2026, 10, 31, 22, tzinfo=UTC), "sum": 15.0},
+        ]
 
-    async def test_nothing_new_imports_nothing(self):
+    async def test_same_last_bucket_is_still_upserted(self):
+        """Even with no newer month, the open last bucket is rewritten."""
         client = MagicMock()
         client.get_registry_data = AsyncMock(return_value=READINGS)
         coordinator = _make_coordinator(
@@ -388,7 +422,13 @@ class TestRegistryImport:
 
         _, mock_add_stats = await _run_registry_update(coordinator, last_stats=last)
 
-        mock_add_stats.assert_not_called()
+        imported = _imported(mock_add_stats)
+        assert imported["ssd_ims:home_consumption_vt"] == [
+            {"start": datetime(2026, 10, 31, 22, tzinfo=UTC), "sum": 15.0}
+        ]
+        assert imported["ssd_ims:home_consumption_nt"] == [
+            {"start": datetime(2026, 10, 31, 22, tzinfo=UTC), "sum": 200.0}
+        ]
 
     async def test_fetched_once_per_day_and_previous_reading_carried_over(self):
         client = MagicMock()
@@ -689,7 +729,7 @@ class TestSupplierPriceChanges:
         coordinator = self._coordinator()
         coordinator._async_supplier_price_changed(_state_event(old, new))
         assert coordinator._reprice_requested
-        coordinator.hass.async_create_task.assert_called_once()
+        coordinator.entry.async_create_background_task.assert_called_once()
 
     @pytest.mark.parametrize(
         ("old", "new"), [("0.25", "0.25"), ("0.25", "unavailable"), ("0.25", None)]
@@ -699,7 +739,7 @@ class TestSupplierPriceChanges:
         coordinator = self._coordinator()
         coordinator._async_supplier_price_changed(_state_event(old, new))
         assert not coordinator._reprice_requested
-        coordinator.hass.async_create_task.assert_not_called()
+        coordinator.entry.async_create_background_task.assert_not_called()
 
     async def test_reprice_runs_despite_the_daily_gate(self):
         """The gate skips portal requests, not the repricing."""

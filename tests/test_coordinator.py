@@ -9,7 +9,11 @@ from homeassistant.exceptions import ConfigEntryAuthFailed
 from homeassistant.util import dt as dt_util
 
 from custom_components.ssd_ims.api_client import SsdImsAuthenticationError
-from custom_components.ssd_ims.const import CONF_HISTORY_DAYS, CONF_POD_NAME_MAPPING
+from custom_components.ssd_ims.const import (
+    CONF_HISTORY_DAYS,
+    CONF_POD_NAME_MAPPING,
+    ISSUE_IMPORT_PAUSED,
+)
 from custom_components.ssd_ims.coordinator import SsdImsDataCoordinator
 from custom_components.ssd_ims.models import ChartData, PointOfDelivery
 
@@ -21,15 +25,19 @@ def _make_coordinator(api_client, config):
     coordinator.api_client = api_client
     coordinator.config = config
     coordinator.entry = MagicMock()
+    coordinator.entry.entry_id = "test-entry"
+    coordinator.entry.async_create_background_task = MagicMock()
     coordinator.pods = {}
     coordinator._last_successful_data_date = None
     coordinator._stats_lock = asyncio.Lock()
+    coordinator._import_pause = None
+    coordinator._force_reimport_day = None
     coordinator.data = None
     return coordinator
 
 
 def _chart_data(day_start: datetime, value: float = 1.0) -> ChartData:
-    """One reading stamped 10:15 into the requested day."""
+    """One reading stamped 10:15 into the requested day (0.25 kWh at 1 kW)."""
     stamp = (day_start + timedelta(hours=10, minutes=15)).astimezone(UTC)
     return ChartData(
         meteringDatetime=[stamp.strftime("%Y-%m-%dT%H:%M:%S.0000000Z")],
@@ -37,7 +45,7 @@ def _chart_data(day_start: datetime, value: float = 1.0) -> ChartData:
         actualSupply=[0.0],
         idleConsumption=[0.0],
         idleSupply=[0.0],
-        sumActualConsumption=value,
+        sumActualConsumption=value * 0.25,
         sumActualSupply=0.0,
         sumIdleConsumption=0.0,
         sumIdleSupply=0.0,
@@ -70,7 +78,8 @@ class TestStatisticsBackfillFailureHandling:
         async def get_chart_data_side_effect(pod_id, day_start, day_end):
             if day_start.date() == fail_day.date():
                 raise RuntimeError("simulated network error")
-            return _chart_data(day_start)
+            # Complete days so incompleteness does not stop the walk first.
+            return _portal_chart_data(day_start, day_end, include_from=False)
 
         api_client = MagicMock()
         api_client.get_chart_data = AsyncMock(side_effect=get_chart_data_side_effect)
@@ -131,7 +140,13 @@ def _portal_chart_data(valid_from, valid_to, *, include_from: bool) -> ChartData
     )
 
 
-async def _run_import_at(coordinator, frozen_now):
+async def _run_import_at(
+    coordinator,
+    frozen_now,
+    *,
+    last_stats=None,
+    sum_before: float = 0.0,
+):
     """Run the statistics import with "now" frozen; return (result, add_stats mock)."""
     with (
         patch(
@@ -143,11 +158,15 @@ async def _run_import_at(coordinator, frozen_now):
         ) as mock_get_instance,
         patch(
             "custom_components.ssd_ims.coordinator.get_last_statistics",
-            return_value={},
+            return_value={} if last_stats is None else last_stats,
         ),
         patch(
             "custom_components.ssd_ims.coordinator.async_add_external_statistics"
         ) as mock_add_stats,
+        patch(
+            "custom_components.ssd_ims.coordinator.SsdImsDataCoordinator._async_sum_before",
+            AsyncMock(return_value=sum_before),
+        ),
         patch("custom_components.ssd_ims.coordinator.asyncio.sleep", AsyncMock()),
     ):
         mock_instance = MagicMock()
@@ -361,3 +380,310 @@ class TestPodDiscovery:
 
         with pytest.raises(ConfigEntryAuthFailed):
             await coordinator._discover_pods()
+
+
+def _partial_day(day_start: datetime, hours: int = 6) -> ChartData:
+    """Complete 15-minute series for the first `hours` of a local day."""
+    stamps = []
+    stamp = day_start.astimezone(UTC) + timedelta(minutes=15)
+    end = day_start.astimezone(UTC) + timedelta(hours=hours)
+    while stamp <= end:
+        stamps.append(stamp.strftime("%Y-%m-%dT%H:%M:%S.0000000Z"))
+        stamp += timedelta(minutes=15)
+    return ChartData(
+        meteringDatetime=stamps,
+        actualConsumption=[4.0] * len(stamps),
+        actualSupply=[4.0] * len(stamps),
+        idleConsumption=[0.0] * len(stamps),
+        idleSupply=[0.0] * len(stamps),
+        sumActualConsumption=float(len(stamps)),
+        sumActualSupply=float(len(stamps)),
+        sumIdleConsumption=0.0,
+        sumIdleSupply=0.0,
+    )
+
+
+class TestImportSafety:
+    """Gap-safe walk, history_days=0, validation pause, aggregate parity."""
+
+    async def test_history_days_zero_still_imports_yesterday(self):
+        tz = dt_util.get_time_zone("Europe/Bratislava")
+        frozen_now = datetime(2026, 10, 24, 10, 0, tzinfo=tz)
+        api_client = MagicMock()
+        api_client.get_chart_data = AsyncMock(
+            side_effect=lambda pod_id, valid_from, valid_to: _portal_chart_data(
+                valid_from, valid_to, include_from=False
+            )
+        )
+        coordinator = _make_coordinator(
+            api_client, {CONF_HISTORY_DAYS: 0, CONF_POD_NAME_MAPPING: {}}
+        )
+
+        result, mock_add_stats = await _run_import_at(coordinator, frozen_now)
+
+        assert result is True
+        # Only yesterday, for both sensor types.
+        assert mock_add_stats.call_count == 2
+
+    async def test_empty_mid_range_day_stops_without_flushing_later_days(self):
+        tz = dt_util.get_time_zone("Europe/Bratislava")
+        frozen_now = datetime(2026, 10, 24, 10, 0, tzinfo=tz)
+        empty_day = datetime(2026, 10, 22, tzinfo=tz)
+
+        def portal(pod_id, valid_from, valid_to):
+            if valid_from == empty_day.astimezone(UTC):
+                return ChartData()
+            return _portal_chart_data(valid_from, valid_to, include_from=False)
+
+        api_client = MagicMock()
+        api_client.get_chart_data = AsyncMock(side_effect=portal)
+        coordinator = _make_coordinator(
+            api_client, {CONF_HISTORY_DAYS: 3, CONF_POD_NAME_MAPPING: {}}
+        )
+
+        with patch(
+            "custom_components.ssd_ims.coordinator.ir.async_create_issue"
+        ) as mock_issue:
+            result, mock_add_stats = await _run_import_at(coordinator, frozen_now)
+
+        assert result is False
+        # Day 21 Oct succeeds (2 sensors); empty 22 Oct stops before 23 Oct.
+        assert mock_add_stats.call_count == 2
+        assert coordinator._import_pause["reason"] == "empty"
+        assert mock_issue.call_args.args[2] == ISSUE_IMPORT_PAUSED
+
+    async def test_empty_after_prior_stats_pauses_without_later_flush(self):
+        tz = dt_util.get_time_zone("Europe/Bratislava")
+        frozen_now = datetime(2026, 10, 24, 10, 0, tzinfo=tz)
+        prior_hour = datetime(2026, 10, 21, 23, 0, tzinfo=tz)
+
+        def portal(pod_id, valid_from, valid_to):
+            local_day = dt_util.as_local(valid_from).date()
+            if local_day.isoformat() == "2026-10-22":
+                return ChartData()
+            return _portal_chart_data(valid_from, valid_to, include_from=False)
+
+        api_client = MagicMock()
+        api_client.get_chart_data = AsyncMock(side_effect=portal)
+        coordinator = _make_coordinator(
+            api_client, {CONF_HISTORY_DAYS: 3, CONF_POD_NAME_MAPPING: {}}
+        )
+        last_stats = {
+            "ssd_ims:pod_1_actual_consumption": [{"start": prior_hour, "sum": 10.0}],
+            "ssd_ims:pod_1_actual_supply": [{"start": prior_hour, "sum": 10.0}],
+        }
+
+        with patch(
+            "custom_components.ssd_ims.coordinator.ir.async_create_issue"
+        ) as mock_issue:
+            result, mock_add_stats = await _run_import_at(
+                coordinator, frozen_now, last_stats=last_stats
+            )
+
+        assert result is False
+        assert mock_add_stats.call_count == 0
+        assert coordinator._import_pause["reason"] == "empty"
+        assert mock_issue.call_args.args[2] == ISSUE_IMPORT_PAUSED
+
+    async def test_leading_empty_days_still_import_later_days(self):
+        tz = dt_util.get_time_zone("Europe/Bratislava")
+        frozen_now = datetime(2026, 10, 24, 10, 0, tzinfo=tz)
+        first_data = datetime(2026, 10, 22, tzinfo=tz)
+
+        def portal(pod_id, valid_from, valid_to):
+            if valid_from < first_data.astimezone(UTC):
+                return ChartData()
+            return _portal_chart_data(valid_from, valid_to, include_from=False)
+
+        api_client = MagicMock()
+        api_client.get_chart_data = AsyncMock(side_effect=portal)
+        coordinator = _make_coordinator(
+            api_client, {CONF_HISTORY_DAYS: 3, CONF_POD_NAME_MAPPING: {}}
+        )
+
+        result, mock_add_stats = await _run_import_at(coordinator, frozen_now)
+
+        assert result is True
+        # 22 + 23 Oct × 2 sensors.
+        assert mock_add_stats.call_count == 4
+        assert coordinator._import_pause is None
+
+    async def test_short_closed_day_pauses_without_later_flush(self):
+        tz = dt_util.get_time_zone("Europe/Bratislava")
+        frozen_now = datetime(2026, 10, 24, 10, 0, tzinfo=tz)
+        short_day = datetime(2026, 10, 22, tzinfo=tz)
+
+        def portal(pod_id, valid_from, valid_to):
+            if valid_from == short_day.astimezone(UTC):
+                return _partial_day(short_day, hours=6)
+            return _portal_chart_data(valid_from, valid_to, include_from=False)
+
+        api_client = MagicMock()
+        api_client.get_chart_data = AsyncMock(side_effect=portal)
+        coordinator = _make_coordinator(
+            api_client, {CONF_HISTORY_DAYS: 3, CONF_POD_NAME_MAPPING: {}}
+        )
+
+        with patch(
+            "custom_components.ssd_ims.coordinator.ir.async_create_issue"
+        ) as mock_issue:
+            result, mock_add_stats = await _run_import_at(coordinator, frozen_now)
+
+        assert result is False
+        # Day 21 Oct succeeds (2 sensors); short 22 Oct stops before 23 Oct.
+        assert mock_add_stats.call_count == 2
+        assert coordinator._import_pause["reason"] == "incomplete"
+        assert mock_issue.call_args.args[2] == ISSUE_IMPORT_PAUSED
+
+    async def test_partial_yesterday_keeps_gate_open_without_repair(self):
+        tz = dt_util.get_time_zone("Europe/Bratislava")
+        frozen_now = datetime(2026, 10, 24, 10, 0, tzinfo=tz)
+        yesterday = datetime(2026, 10, 23, tzinfo=tz)
+
+        def portal(pod_id, valid_from, valid_to):
+            if valid_from == yesterday.astimezone(UTC):
+                return _partial_day(yesterday, hours=6)
+            return _portal_chart_data(valid_from, valid_to, include_from=False)
+
+        api_client = MagicMock()
+        api_client.get_chart_data = AsyncMock(side_effect=portal)
+        coordinator = _make_coordinator(
+            api_client, {CONF_HISTORY_DAYS: 2, CONF_POD_NAME_MAPPING: {}}
+        )
+
+        with patch(
+            "custom_components.ssd_ims.coordinator.ir.async_create_issue"
+        ) as mock_issue:
+            result, mock_add_stats = await _run_import_at(coordinator, frozen_now)
+
+        assert result is False
+        assert mock_add_stats.call_count >= 2
+        assert coordinator._import_pause is None
+        assert not mock_issue.called
+
+    async def test_invalid_chart_data_pauses_without_writing(self):
+        tz = dt_util.get_time_zone("Europe/Bratislava")
+        frozen_now = datetime(2026, 10, 24, 10, 0, tzinfo=tz)
+        bad_day = datetime(2026, 10, 22, tzinfo=tz)
+
+        def portal(pod_id, valid_from, valid_to):
+            if valid_from == bad_day.astimezone(UTC):
+                # Length mismatch: two stamps, one consumption value.
+                return ChartData(
+                    meteringDatetime=[
+                        (bad_day.astimezone(UTC) + timedelta(minutes=15)).strftime(
+                            "%Y-%m-%dT%H:%M:%S.0000000Z"
+                        ),
+                        (bad_day.astimezone(UTC) + timedelta(minutes=30)).strftime(
+                            "%Y-%m-%dT%H:%M:%S.0000000Z"
+                        ),
+                    ],
+                    actualConsumption=[4.0],
+                    actualSupply=[4.0, 4.0],
+                    sumActualConsumption=1.0,
+                    sumActualSupply=2.0,
+                )
+            return _portal_chart_data(valid_from, valid_to, include_from=False)
+
+        api_client = MagicMock()
+        api_client.get_chart_data = AsyncMock(side_effect=portal)
+        coordinator = _make_coordinator(
+            api_client, {CONF_HISTORY_DAYS: 3, CONF_POD_NAME_MAPPING: {}}
+        )
+
+        with patch(
+            "custom_components.ssd_ims.coordinator.ir.async_create_issue"
+        ) as mock_issue:
+            result, mock_add_stats = await _run_import_at(coordinator, frozen_now)
+
+        assert result is False
+        # Day 21 Oct flushed for both sensors; bad day writes nothing; later skipped.
+        assert mock_add_stats.call_count == 2
+        assert coordinator._import_pause is not None
+        assert coordinator._import_pause["reason"] == "length_mismatch"
+        assert mock_issue.call_args.args[2] == ISSUE_IMPORT_PAUSED
+
+    async def test_sum_mismatch_does_not_pause(self):
+        tz = dt_util.get_time_zone("Europe/Bratislava")
+        frozen_now = datetime(2026, 10, 24, 10, 0, tzinfo=tz)
+        mismatch_day = datetime(2026, 10, 22, tzinfo=tz)
+
+        def portal(pod_id, valid_from, valid_to):
+            chart = _portal_chart_data(valid_from, valid_to, include_from=False)
+            if valid_from == mismatch_day.astimezone(UTC):
+                return chart.model_copy(
+                    update={
+                        "sum_actual_consumption": 9999.0,
+                        "sum_actual_supply": 9999.0,
+                    }
+                )
+            return chart
+
+        api_client = MagicMock()
+        api_client.get_chart_data = AsyncMock(side_effect=portal)
+        coordinator = _make_coordinator(
+            api_client, {CONF_HISTORY_DAYS: 3, CONF_POD_NAME_MAPPING: {}}
+        )
+
+        with patch(
+            "custom_components.ssd_ims.coordinator.ir.async_create_issue"
+        ) as mock_issue:
+            result, mock_add_stats = await _run_import_at(coordinator, frozen_now)
+
+        assert result is True
+        assert mock_add_stats.call_count == 6
+        assert coordinator._import_pause is None
+        assert not mock_issue.called
+
+    async def test_explicit_reimport_rewrites_closed_day_through_yesterday(self):
+        tz = dt_util.get_time_zone("Europe/Bratislava")
+        frozen_now = datetime(2026, 10, 24, 10, 0, tzinfo=tz)
+        # Last stored hour is end of yesterday — 21 Oct is a closed day.
+        prior_hour = datetime(2026, 10, 23, 23, 0, tzinfo=tz)
+        force_day = prior_hour.date() - timedelta(days=2)  # 21 Oct
+
+        api_client = MagicMock()
+        api_client.get_chart_data = AsyncMock(
+            side_effect=lambda pod_id, valid_from, valid_to: _portal_chart_data(
+                valid_from, valid_to, include_from=False
+            )
+        )
+        coordinator = _make_coordinator(
+            api_client, {CONF_HISTORY_DAYS: 1, CONF_POD_NAME_MAPPING: {}}
+        )
+        coordinator._force_reimport_day = force_day
+        last_stats = {
+            "ssd_ims:pod_1_actual_consumption": [{"start": prior_hour, "sum": 100.0}],
+            "ssd_ims:pod_1_actual_supply": [{"start": prior_hour, "sum": 100.0}],
+        }
+
+        result, mock_add_stats = await _run_import_at(
+            coordinator, frozen_now, last_stats=last_stats, sum_before=50.0
+        )
+
+        assert result is True
+        # 21 + 22 + 23 Oct × 2 sensors.
+        assert mock_add_stats.call_count == 6
+        assert coordinator._force_reimport_day is None
+        # First hour of the rewrite should continue from sum_before (4 kWh/h).
+        first_stats = mock_add_stats.call_args_list[0].args[2]
+        assert first_stats[0]["sum"] == pytest.approx(54.0)
+
+    async def test_aggregate_matches_hourly_kwh_excluding_boundary(self):
+        tz = dt_util.get_time_zone("Europe/Bratislava")
+        day_start = datetime(2026, 10, 23, tzinfo=tz)
+        day_end = day_start + timedelta(days=1)
+        chart = _portal_chart_data(
+            day_start.astimezone(UTC), day_end.astimezone(UTC), include_from=True
+        )
+        coordinator = _make_coordinator(MagicMock(), {})
+
+        with patch(
+            "custom_components.ssd_ims.coordinator.dt_util.now",
+            return_value=datetime(2026, 10, 24, 10, 0, tzinfo=tz),
+        ):
+            aggregated = coordinator._aggregate_data(chart)
+
+        # 96 in-day quarters × 4 kW × 0.25 = 96 kWh (boundary excluded).
+        assert aggregated["actual_consumption"] == pytest.approx(96.0)
+        assert aggregated["actual_supply"] == pytest.approx(96.0)

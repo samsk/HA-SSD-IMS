@@ -88,6 +88,13 @@ STAT_ACTUAL_CONSUMPTION_COST: Final = "actual_consumption_cost"
 # (and any ad-hoc reading in between) is published.
 COST_RECOMPUTE_PERIODS: Final = 3
 
+# Manual reimport service (domain-level; registered once for all entries)
+SERVICE_REIMPORT_STATISTICS: Final = "reimport_statistics"
+ATTR_ENTRY_ID: Final = "entry_id"
+ATTR_DATE: Final = "date"
+# Repair issue while a structurally invalid day blocks forward import
+ISSUE_IMPORT_PAUSED: Final = "import_paused"
+
 # Sensor types
 SENSOR_TYPE_ACTUAL_CONSUMPTION: Final = "actual_consumption"
 SENSOR_TYPE_ACTUAL_SUPPLY: Final = "actual_supply"

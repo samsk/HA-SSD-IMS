@@ -49,9 +49,20 @@ async def async_get_config_entry_diagnostics(
             },
         }
 
+    pause = getattr(coordinator, "_import_pause", None)
     return {
         "entry_data": async_redact_data(dict(entry.data), TO_REDACT),
         "options": dict(entry.options),
         "pods_discovered": list(pod_labels.values()),
         "coordinator_data": coordinator_data,
+        "import_pause": (
+            {
+                "day": pause.get("day"),
+                "reason": pause.get("reason"),
+                "statistic_id": pause.get("statistic_id"),
+                # pod_name can be a home address — keep it out of diagnostics.
+            }
+            if pause
+            else None
+        ),
     }

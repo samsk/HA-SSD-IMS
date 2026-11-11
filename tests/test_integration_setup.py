@@ -55,7 +55,8 @@ def _mock_api_client():
             meteringDatetime=["2026-08-18T10:15:00Z"],
             actualConsumption=[1.5],
             actualSupply=[0.0],
-            sumActualConsumption=1.5,
+            # Portal sum is kWh ≈ sum(kW) * 0.25
+            sumActualConsumption=0.375,
             sumActualSupply=0.0,
         )
     )

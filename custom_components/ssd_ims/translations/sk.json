@@ -58,6 +58,35 @@
       "cannot_connect": "Nedá sa pripojiť k SSD IMS portálu"
     }
   },
+  "issues": {
+    "import_paused": {
+      "title": "Import energie SSD IMS je pozastavený",
+      "fix_flow": {
+        "step": {
+          "confirm": {
+            "title": "Znova importovať štatistiky energie",
+            "description": "Import štatistík energie pre **{pod_name}** dňa **{day}** bol pozastavený, pretože portál vrátil neplatné údaje ({reason}). Neskoršie dni sa neimportovali, aby sa v bežiacom súčte nevytvorila medzera.\n\n1. Overte na portáli SSD IMS, či sú údaje za ten deň úplné.\n2. Potvrďte nižšie (alebo použite akciu `ssd_ims.reimport_statistics`), aby sa ten deň a novšie dni až po včerajšok prepísali.\n3. Keď portál vráti platný deň, import pokračuje a toto upozornenie sa zruší. Ďalšie plánované obnovenie to skúsi aj samo."
+          }
+        }
+      }
+    }
+  },
+  "services": {
+    "reimport_statistics": {
+      "name": "Znova importovať štatistiky",
+      "description": "Znova načíta údaje z portálu od zvoleného lokálneho dňa až po včerajšok a prepíše hodinové štatistiky, aby bežiaci súčet zostal spojitý. Predvolene pozastavený deň, inak včerajšok. Plánované obnovenie uzavreté dni neprepíše.",
+      "fields": {
+        "entry_id": {
+          "name": "Konfiguračný záznam",
+          "description": "Ktorý záznam SSD IMS znova importovať. Nechajte prázdne pre všetky načítané záznamy."
+        },
+        "date": {
+          "name": "Deň",
+          "description": "Lokálny kalendárny deň, od ktorého sa má prepísať (RRRR-MM-DD). Prepíše sa ten deň a všetky novšie dni až po včerajšok. Predvolene pozastavený deň alebo včerajšok."
+        }
+      }
+    }
+  },
   "options": {
     "step": {
       "init": {

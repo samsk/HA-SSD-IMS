@@ -51,10 +51,11 @@ class TestSsdImsApiClient:
             "actualSupply": [0.0],
             "idleConsumption": [0.0],
             "idleSupply": [0.72],
-            "sumActualConsumption": 16.7000,
-            "sumActualSupply": 18.7760,
+            # Portal sumActual* is energy (kWh) ≈ sum(kW) * 0.25
+            "sumActualConsumption": 0.033,
+            "sumActualSupply": 0.0,
             "sumIdleConsumption": 0.0,
-            "sumIdleSupply": 42.7910,
+            "sumIdleSupply": 0.18,
         }
 
     class TestAuthentication:
@@ -328,8 +329,8 @@ class TestSsdImsApiClient:
 
                 chart_data = await api_client.get_chart_data(pod_id, from_date, to_date)
 
-                assert chart_data.sum_actual_consumption == 16.7000
-                assert chart_data.sum_actual_supply == 18.7760
+                assert chart_data.sum_actual_consumption == pytest.approx(0.033)
+                assert chart_data.sum_actual_supply == 0.0
                 assert len(chart_data.metering_datetime) == 1
                 assert len(chart_data.actual_consumption) == 1
 

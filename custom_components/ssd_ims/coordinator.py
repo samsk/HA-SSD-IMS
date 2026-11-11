@@ -18,6 +18,7 @@ from homeassistant.const import Platform
 from homeassistant.core import CALLBACK_TYPE, CoreState, Event, HomeAssistant, callback
 from homeassistant.exceptions import ConfigEntryAuthFailed
 from homeassistant.helpers import entity_registry as er
+from homeassistant.helpers import issue_registry as ir
 from homeassistant.helpers.event import async_track_state_change_event
 from homeassistant.helpers.update_coordinator import (
     DataUpdateCoordinator,
@@ -40,6 +41,7 @@ from .const import (
     DEFAULT_HISTORY_DAYS,
     DEFAULT_SCAN_INTERVAL,
     DOMAIN,
+    ISSUE_IMPORT_PAUSED,
     REGISTER_STAT_CONSUMPTION_NT,
     REGISTER_STAT_CONSUMPTION_VT,
     REGISTER_STAT_COST_NT,
@@ -50,7 +52,16 @@ from .const import (
     STAT_ACTUAL_CONSUMPTION_COST,
     SUPPLIER_PRICE_DOMAIN,
 )
-from .helpers import PriceHistory, calculate_yesterday_range, sanitize_name
+from .helpers import (
+    InvalidChartData,
+    InvalidRegistryData,
+    PriceHistory,
+    aggregate_chart_day,
+    calculate_yesterday_range,
+    sanitize_name,
+    validate_chart_structure,
+    validate_registry_readings,
+)
 from .models import ChartData, PointOfDelivery, RegistryReading
 
 _LOGGER = logging.getLogger(__name__)
@@ -96,6 +107,12 @@ class SsdImsDataCoordinator(DataUpdateCoordinator):
         # after today's update) are picked up from entity registry events.
         self._supplier_pod_ids: list[str] = []
         self._unsub_supplier_registry: CALLBACK_TYPE | None = None
+        # Structurally invalid portal day that blocks forward import until a
+        # later good payload (or a manual reimport) succeeds.
+        self._import_pause: dict[str, Any] | None = None
+        # Optional local day that a manual reimport must rewrite even if hours
+        # already exist for it.
+        self._force_reimport_day: date | None = None
 
         scan_interval = timedelta(
             minutes=config.get(CONF_SCAN_INTERVAL, DEFAULT_SCAN_INTERVAL)
@@ -191,12 +208,15 @@ class SsdImsDataCoordinator(DataUpdateCoordinator):
                     continue
 
                 pod_data = all_pod_data.setdefault(pod_id, {})
-                pod_data.update(
-                    {
-                        "aggregated_data": self._aggregate_data(chart_data),
-                        "last_update": now.isoformat(),
-                    }
-                )
+                aggregated = self._aggregate_data(chart_data)
+                if aggregated is None:
+                    # Keep the last good yesterday totals on invalid data.
+                    previous = (self.data or {}).get(pod_id, {}).get("aggregated_data")
+                    if previous is not None:
+                        pod_data["aggregated_data"] = previous
+                else:
+                    pod_data["aggregated_data"] = aggregated
+                pod_data["last_update"] = now.isoformat()
 
             self._reprice_requested = False
             await self._update_registry(pod_ids, all_pod_data, today)
@@ -266,15 +286,105 @@ class SsdImsDataCoordinator(DataUpdateCoordinator):
         async with self._stats_lock:
             return await self._update_statistics_locked(pod_ids)
 
-    async def _update_statistics_locked(self, pod_ids: list[str]) -> bool:
+    def _raise_import_pause(
+        self, *, pod_name: str, day: date, reason: str, statistic_id: str
+    ) -> None:
+        """Record a pause and raise (or refresh) the import_paused repair.
+
+        One issue id for the domain (``import_paused``). The entry id lives in
+        the issue data so ``repairs.py`` can reimport; a second entry would
+        overwrite the same issue — this integration is one entry per account.
         """
-        Import statistics for all configured PODs.
+        self._import_pause = {
+            "pod_name": pod_name,
+            "day": day.isoformat(),
+            "reason": reason,
+            "statistic_id": statistic_id,
+        }
+        ir.async_create_issue(
+            self.hass,
+            DOMAIN,
+            ISSUE_IMPORT_PAUSED,
+            is_fixable=True,
+            severity=ir.IssueSeverity.WARNING,
+            translation_key=ISSUE_IMPORT_PAUSED,
+            translation_placeholders={
+                "pod_name": pod_name,
+                "day": day.isoformat(),
+                "reason": reason,
+            },
+            data={"entry_id": self.entry.entry_id},
+        )
+
+    def async_clear_import_pause(self) -> None:
+        """Clear pause state and delete the repair issue if one exists."""
+        self._import_pause = None
+        ir.async_delete_issue(self.hass, DOMAIN, ISSUE_IMPORT_PAUSED)
+
+    async def async_reimport(self, day: date | None = None) -> None:
+        """Force a rewrite from one local day through yesterday.
+
+        Default day is the paused day, else yesterday. Clears the smart-poll
+        gate so the next refresh rebases from that midnight even when hours
+        already exist for a closed day.
+        """
+        today = dt_util.now().date()
+        if day is None:
+            if self._import_pause and self._import_pause.get("day"):
+                day = date.fromisoformat(self._import_pause["day"])
+            else:
+                day = today - timedelta(days=1)
+        self._force_reimport_day = day
+        self._last_successful_data_date = None
+        await self.async_request_refresh()
+
+    async def _async_sum_before(self, statistic_id: str, before: datetime) -> float:
+        """Return the cumulative sum of the last hour strictly before before."""
+
+        def _stats() -> list[dict[str, Any]]:
+            result = statistics_during_period(
+                self.hass,
+                before - timedelta(days=40),
+                before,
+                {statistic_id},
+                "hour",
+                None,
+                {"sum"},
+            )
+            return result.get(statistic_id, [])
+
+        rows = await get_instance(self.hass).async_add_executor_job(_stats)
+        previous = 0.0
+        for row in rows:
+            start = row["start"]
+            if isinstance(start, (int, float)):
+                start = dt_util.utc_from_timestamp(start)
+            if start < before:
+                previous = row.get("sum") or 0.0
+        return previous
+
+    def _sensor_values(self, chart_data: ChartData, sensor_type: str) -> list[float]:
+        """Return the kW series for a sensor type."""
+        if sensor_type == SENSOR_TYPE_ACTUAL_CONSUMPTION:
+            return chart_data.actual_consumption
+        return chart_data.actual_supply
+
+    async def _update_statistics_locked(self, pod_ids: list[str]) -> bool:
+        """Import statistics for all configured PODs.
 
         Returns True when statistics are complete through yesterday for every
         configured POD and sensor type — meaning no further API calls are needed
         today and smart polling can safely skip the next scheduled update.
         """
         all_up_to_date = True
+        force_day = self._force_reimport_day
+        # Consumed for this run whether or not it succeeds — a later successful
+        # day clear is enough to resume; a failed forced day keeps the pause.
+        self._force_reimport_day = None
+        # Explicit reimport (service / repair) may rewrite a closed day and
+        # accept a short/empty response for that day; scheduled polls do not.
+        explicit = force_day is not None
+
         for pod_id in pod_ids:
             pod_name_mapping = self.config.get(CONF_POD_NAME_MAPPING, {})
             pod_name = pod_name_mapping.get(pod_id, pod_id)
@@ -294,41 +404,70 @@ class SsdImsDataCoordinator(DataUpdateCoordinator):
                 )
 
                 cumulative_sum = 0.0
-                start_date = dt_util.now().replace(
+                end_date = dt_util.now().replace(
                     hour=0, minute=0, second=0, microsecond=0
                 )
-                last_stat_timestamp = None
+                last_pending_day = end_date - timedelta(days=1)
+                last_stat_timestamp: datetime | None = None
+                rewrite_from_midnight = False
+                # Remember before last_stat_timestamp is cleared for a rewrite:
+                # an empty day after stored history is a hole, not a leading gap.
+                had_prior_stats = bool(
+                    last_stats_result and statistic_id in last_stats_result
+                )
 
-                if last_stats_result and statistic_id in last_stats_result:
+                if had_prior_stats:
                     last_stat = last_stats_result[statistic_id][0]
                     cumulative_sum = last_stat.get("sum") or 0.0
                     if start_val := last_stat.get("start"):
                         if isinstance(start_val, (int, float)):
                             start_val = dt_util.utc_from_timestamp(start_val)
                         last_stat_timestamp = dt_util.as_local(start_val)
-                        start_date = last_stat_timestamp.replace(
+                        last_day_start = last_stat_timestamp.replace(
                             hour=0, minute=0, second=0, microsecond=0
-                        ) + timedelta(days=1)
+                        )
+                        # An open yesterday must be re-fetched and rewritten
+                        # from its local midnight — otherwise a partial morning
+                        # import would permanently close the day.
+                        if last_day_start == last_pending_day:
+                            start_date = last_day_start
+                            rewrite_from_midnight = True
+                        else:
+                            start_date = last_day_start + timedelta(days=1)
+                    else:
+                        history_days = max(
+                            self.config.get(CONF_HISTORY_DAYS, DEFAULT_HISTORY_DAYS),
+                            1,
+                        )
+                        start_date = end_date - timedelta(days=history_days)
                 else:
-                    history_days = self.config.get(
-                        CONF_HISTORY_DAYS, DEFAULT_HISTORY_DAYS
+                    history_days = max(
+                        self.config.get(CONF_HISTORY_DAYS, DEFAULT_HISTORY_DAYS),
+                        1,
                     )
-                    start_date = start_date - timedelta(days=history_days)
+                    start_date = end_date - timedelta(days=history_days)
 
-                end_date = dt_util.now().replace(
-                    hour=0, minute=0, second=0, microsecond=0
-                )
+                if force_day is not None:
+                    forced_start = end_date.replace(
+                        year=force_day.year, month=force_day.month, day=force_day.day
+                    )
+                    # Explicit reimport rebases from that local midnight even
+                    # when it is before the last stored hour (closed day).
+                    if forced_start < end_date:
+                        start_date = forced_start
+                        rewrite_from_midnight = True
 
                 if start_date >= end_date:
                     continue
 
-                # Track whether the portal has published data through the most
-                # recent pending day (yesterday). Earlier days in the range may
-                # legitimately have data while the latest day doesn't yet, so
-                # completeness is judged on that last day specifically, not on
-                # whether any day in the range returned data.
-                last_pending_day = end_date - timedelta(days=1)
-                got_last_day_data = False
+                if rewrite_from_midnight:
+                    cumulative_sum = await self._async_sum_before(
+                        statistic_id, start_date.astimezone(UTC)
+                    )
+                    last_stat_timestamp = None
+
+                got_last_day_complete = False
+                imported_any = False
                 metadata = {
                     "has_sum": True,
                     "mean_type": StatisticMeanType.NONE,
@@ -349,76 +488,126 @@ class SsdImsDataCoordinator(DataUpdateCoordinator):
 
                     try:
                         await asyncio.sleep(self._get_random_api_delay())
-                        # Convert to UTC before calling the API, matching
-                        # helpers.calculate_yesterday_range — day_start/day_end
-                        # themselves stay local for the comparisons below.
                         chart_data = await self.api_client.get_chart_data(
                             pod_id, day_start.astimezone(UTC), day_end.astimezone(UTC)
                         )
 
-                        if not chart_data or not chart_data.metering_datetime:
-                            current_date += timedelta(days=1)
-                            continue
+                        validate_chart_structure(chart_data, now=dt_util.now())
+                        day_energy = aggregate_chart_day(
+                            chart_data,
+                            self._sensor_values(chart_data, sensor_type),
+                            day_start,
+                            day_end,
+                        )
 
-                        hourly_data: dict[datetime, float] = {}
-                        for i, timestamp_str in enumerate(chart_data.metering_datetime):
-                            timestamp_end_utc = datetime.fromisoformat(
-                                timestamp_str.replace("Z", "+00:00")
-                            )
-                            timestamp_start_utc = timestamp_end_utc - timedelta(
-                                minutes=15
-                            )
-                            # Only count quarter-hours that *start* within this
-                            # day, so a reading at the request boundary is never
-                            # attributed to two days.
-                            if not day_start <= timestamp_start_utc < day_end:
+                        if day_energy.quarter_count == 0:
+                            if day_start == last_pending_day and not explicit:
+                                # Portal has not published yesterday yet.
+                                all_up_to_date = False
+                                _LOGGER.debug(
+                                    "No in-day data for %s on %s — will retry",
+                                    statistic_id,
+                                    day_start.date(),
+                                )
+                                break
+                            if (
+                                not had_prior_stats
+                                and not imported_any
+                                and not explicit
+                            ):
+                                # Leading gap (meter not installed yet).
+                                current_date += timedelta(days=1)
                                 continue
-                            # Judged after the boundary filter: the previous
-                            # day's final reading alone must not mark the
-                            # pending day as published.
-                            if day_start == last_pending_day:
-                                got_last_day_data = True
-
-                            value = (
-                                chart_data.actual_consumption[i]
-                                if sensor_type == SENSOR_TYPE_ACTUAL_CONSUMPTION
-                                else chart_data.actual_supply[i]
-                            )
-                            if value is None:
+                            if explicit:
+                                # User asked to accept whatever the portal has.
+                                current_date += timedelta(days=1)
                                 continue
-
-                            hour_timestamp = timestamp_start_utc.replace(
-                                minute=0, second=0, microsecond=0
+                            # Hole after stored history: do not skip it.
+                            self._raise_import_pause(
+                                pod_name=pod_name,
+                                day=day_start.date(),
+                                reason="empty",
+                                statistic_id=statistic_id,
                             )
+                            all_up_to_date = False
+                            _LOGGER.error(
+                                "Empty day for %s on %s after prior data — paused",
+                                statistic_id,
+                                day_start.date(),
+                            )
+                            break
 
-                            if hour_timestamp not in hourly_data:
-                                hourly_data[hour_timestamp] = 0.0
-                            hourly_data[hour_timestamp] += value * 0.25
+                        # Short closed day on a scheduled poll: pause. Yesterday
+                        # may still be written partial. Explicit reimport writes
+                        # the short day as returned and continues.
+                        if (
+                            not day_energy.complete
+                            and day_start != last_pending_day
+                            and not explicit
+                        ):
+                            self._raise_import_pause(
+                                pod_name=pod_name,
+                                day=day_start.date(),
+                                reason="incomplete",
+                                statistic_id=statistic_id,
+                            )
+                            all_up_to_date = False
+                            _LOGGER.error(
+                                "Incomplete data for %s on %s — paused",
+                                statistic_id,
+                                day_start.date(),
+                            )
+                            break
+
+                        if day_start == last_pending_day and day_energy.complete:
+                            got_last_day_complete = True
 
                         day_stats = []
-                        for hour_timestamp, hourly_value in sorted(hourly_data.items()):
+                        for hour_timestamp, hourly_value in sorted(
+                            day_energy.hourly_kwh.items()
+                        ):
                             if (
-                                last_stat_timestamp
+                                last_stat_timestamp is not None
                                 and hour_timestamp <= last_stat_timestamp
                             ):
                                 continue
-
                             cumulative_sum += hourly_value
                             day_stats.append(
-                                {
-                                    "start": hour_timestamp,
-                                    "sum": cumulative_sum,
-                                }
+                                {"start": hour_timestamp, "sum": cumulative_sum}
                             )
 
-                        # Flush after each day so progress survives a cancelled
-                        # or interrupted update instead of being redone from
-                        # scratch on the next poll.
                         if day_stats:
                             async_add_external_statistics(
                                 self.hass, metadata, day_stats
                             )
                             last_stat_timestamp = day_stats[-1]["start"]
+                            imported_any = True
+                            if (
+                                self._import_pause
+                                and self._import_pause.get("day")
+                                == day_start.date().isoformat()
+                            ):
+                                self.async_clear_import_pause()
+
+                        if day_start == last_pending_day and not day_energy.complete:
+                            all_up_to_date = False
+                            break
+
+                    except InvalidChartData as err:
+                        _LOGGER.error(
+                            "Invalid chart data for %s on %s: %s",
+                            statistic_id,
+                            day_start.date(),
+                            err,
+                        )
+                        self._raise_import_pause(
+                            pod_name=pod_name,
+                            day=day_start.date(),
+                            reason=err.reason,
+                            statistic_id=statistic_id,
+                        )
+                        all_up_to_date = False
+                        break
                     except Exception as e:
                         _LOGGER.error(
                             "Failed to fetch or process data for %s on %s: %s",
@@ -438,10 +627,9 @@ class SsdImsDataCoordinator(DataUpdateCoordinator):
 
                     current_date += timedelta(days=1)
 
-                if not got_last_day_data:
-                    # Portal has not published yesterday's data yet
+                if not got_last_day_complete:
                     _LOGGER.debug(
-                        "No data available yet for %s (pending from %s) — will retry",
+                        "Yesterday not complete for %s (pending from %s) — will retry",
                         statistic_id,
                         start_date.date(),
                     )
@@ -532,26 +720,33 @@ class SsdImsDataCoordinator(DataUpdateCoordinator):
         unit: str,
         unit_class: str | None,
         deltas: list[tuple[datetime, float]],
+        *,
+        rebuild_all: bool = False,
     ) -> None:
-        """Append register deltas newer than the last imported statistic."""
+        """Import register deltas as a cumulative sum series.
+
+        By default only the last stored bucket and anything newer are upserted,
+        so a second reading that lands in an already-imported hour updates that
+        hour instead of being skipped. When rebuild_all is True (monthly costs),
+        the whole series is rebuilt from the deltas and price history.
+        """
         last_stats_result = await get_instance(self.hass).async_add_executor_job(
             get_last_statistics, self.hass, 1, statistic_id, True, {"start", "sum"}
         )
-        cumulative_sum = 0.0
         last_start: datetime | None = None
         if last_stats_result and statistic_id in last_stats_result:
             last_stat = last_stats_result[statistic_id][0]
-            cumulative_sum = last_stat.get("sum") or 0.0
             if (start_val := last_stat.get("start")) is not None:
                 if isinstance(start_val, (int, float)):
                     start_val = dt_util.utc_from_timestamp(start_val)
                 last_start = start_val
 
+        cumulative_sum = 0.0
         stats = []
         for bucket, delta in deltas:
-            if last_start is not None and bucket <= last_start:
-                continue
             cumulative_sum += delta
+            if not rebuild_all and last_start is not None and bucket < last_start:
+                continue
             stats.append({"start": bucket, "sum": round(cumulative_sum, 6)})
 
         if not stats:
@@ -616,6 +811,17 @@ class SsdImsDataCoordinator(DataUpdateCoordinator):
                         "consumption_total": latest.consumption_total,
                         "max_demand": latest.max_demand,
                     }
+                except InvalidRegistryData as e:
+                    all_ok = False
+                    _LOGGER.error("Invalid register data for POD %s: %s", pod_id, e)
+                    self._raise_import_pause(
+                        pod_name=pod_name,
+                        day=today,
+                        reason=e.reason,
+                        statistic_id=self._build_statistic_id(
+                            pod_name, REGISTER_STAT_CONSUMPTION_VT
+                        ),
+                    )
                 except Exception as e:
                     all_ok = False
                     _LOGGER.error(
@@ -629,9 +835,9 @@ class SsdImsDataCoordinator(DataUpdateCoordinator):
         self, pod_id: str, pod_name: str, readings: list[RegistryReading]
     ) -> None:
         """Import the monthly VT/NT energy and, when priced, cost statistics."""
+        validate_registry_readings(readings)
         # Read the prices only now: the options may have changed while the
-        # registry request was in flight, and imported buckets are never
-        # repriced later.
+        # registry request was in flight.
         price_vt, price_nt = await self._pod_price_histories(pod_id)
         for attr, energy_key, cost_key, label, price in (
             (
@@ -658,15 +864,16 @@ class SsdImsDataCoordinator(DataUpdateCoordinator):
                 deltas,
             )
             if price is not None:
-                # Buckets skipped while the price was unknown are imported on
-                # a later run: only buckets newer than the cost series' own
-                # last statistic are appended.
+                # Rebuild the whole cost series so a later price history (e.g.
+                # supplier sensors that appeared after the first import) can
+                # correct earlier flat-priced buckets.
                 await self._import_register_series(
                     self._build_statistic_id(pod_name, cost_key),
                     f"{pod_name} Cost {label}",
                     CURRENCY,
                     None,
                     [(b, d * price.at(b)) for b, d in deltas],
+                    rebuild_all=True,
                 )
 
     async def _async_reprice(self) -> None:
@@ -761,7 +968,11 @@ class SsdImsDataCoordinator(DataUpdateCoordinator):
     def _request_reprice(self) -> None:
         """Flag a repricing and request a (debounced) refresh."""
         self._reprice_requested = True
-        self.hass.async_create_task(self.async_request_refresh())
+        self.entry.async_create_background_task(
+            self.hass,
+            self.async_request_refresh(),
+            f"{DOMAIN}_reprice_refresh",
+        )
 
     @callback
     def _async_supplier_price_changed(self, event: Event) -> None:
@@ -1144,12 +1355,38 @@ class SsdImsDataCoordinator(DataUpdateCoordinator):
         # long-running statistics backfill).
         self.api_client.set_cached_pods(list(self.pods.values()))
 
-    def _aggregate_data(self, chart_data: ChartData | None) -> dict[str, float]:
-        """Aggregate yesterday's chart data into per-sensor-type totals."""
-        if chart_data is None:
+    def _aggregate_data(self, chart_data: ChartData | None) -> dict[str, float] | None:
+        """Aggregate yesterday's chart data into per-sensor-type totals.
+
+        Uses the same start-in-day filter and kW→kWh conversion as the
+        statistics import, so the Yesterday sensors match that day's
+        statistic deltas (including excluding the previous day's final
+        boundary quarter). Returns None when the payload is structurally
+        invalid so the caller can keep the last good value.
+        """
+        if chart_data is None or not chart_data.metering_datetime:
             return dict.fromkeys(ENABLED_SENSOR_TYPES, 0.0)
 
+        now = dt_util.now()
+        day_start = now.replace(hour=0, minute=0, second=0, microsecond=0) - timedelta(
+            days=1
+        )
+        day_end = day_start + timedelta(days=1)
+        try:
+            validate_chart_structure(chart_data, now=now)
+        except InvalidChartData as err:
+            _LOGGER.warning(
+                "Yesterday chart data failed validation (%s); keeping previous values",
+                err.reason,
+            )
+            return None
+
         return {
-            SENSOR_TYPE_ACTUAL_CONSUMPTION: chart_data.sum_actual_consumption or 0.0,
-            SENSOR_TYPE_ACTUAL_SUPPLY: chart_data.sum_actual_supply or 0.0,
+            sensor_type: aggregate_chart_day(
+                chart_data,
+                self._sensor_values(chart_data, sensor_type),
+                day_start,
+                day_end,
+            ).total_kwh
+            for sensor_type in ENABLED_SENSOR_TYPES
         }

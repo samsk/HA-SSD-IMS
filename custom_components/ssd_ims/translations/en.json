@@ -58,6 +58,35 @@
       "cannot_connect": "Cannot connect to SSD IMS portal"
     }
   },
+  "issues": {
+    "import_paused": {
+      "title": "SSD IMS energy import paused",
+      "fix_flow": {
+        "step": {
+          "confirm": {
+            "title": "Import energy statistics again",
+            "description": "Import of energy statistics for **{pod_name}** on **{day}** was paused because the portal returned invalid data ({reason}). Later days were not imported so the running total cannot skip a hole.\n\n1. Check that the SSD IMS portal shows complete data for that day.\n2. Confirm below (or call the `ssd_ims.reimport_statistics` action) to rewrite that day through yesterday.\n3. When the portal returns a valid day, the import continues and this warning clears. A later scheduled poll also retries without any action from you."
+          }
+        }
+      }
+    }
+  },
+  "services": {
+    "reimport_statistics": {
+      "name": "Reimport statistics",
+      "description": "Re-fetch portal data from the chosen local day through yesterday and rewrite hourly statistics so running totals stay continuous. Defaults to the paused day, or yesterday. Scheduled polls do not rewrite closed days.",
+      "fields": {
+        "entry_id": {
+          "name": "Config entry",
+          "description": "Which SSD IMS entry to reimport. Leave empty to reimport all loaded entries."
+        },
+        "date": {
+          "name": "Day",
+          "description": "Local calendar day to start rewriting from (YYYY-MM-DD). That day and all later days through yesterday are rewritten. Defaults to the paused day or yesterday."
+        }
+      }
+    }
+  },
   "options": {
     "step": {
       "init": {

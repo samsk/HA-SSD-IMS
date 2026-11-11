@@ -215,9 +215,11 @@ class RegistryReading(BaseModel):
             text = v.replace("Z", "+00:00")
             if "." in text:
                 head, _, tail = text.partition(".")
-                digits = "".join(ch for ch in tail if ch.isdigit())
-                offset = tail[len(digits) :]
-                text = f"{head}.{digits[:6].ljust(6, '0')}{offset}"
+                # Only fractional digits; do not swallow +HH:MM offset digits.
+                match = re.match(r"^(\d+)(.*)$", tail)
+                if match:
+                    digits, offset = match.group(1), match.group(2)
+                    text = f"{head}.{digits[:6].ljust(6, '0')}{offset}"
             parsed = datetime.fromisoformat(text)
             if parsed.tzinfo is None:
                 parsed = parsed.replace(tzinfo=UTC)

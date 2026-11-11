@@ -1,5 +1,16 @@
 # Changelog
 
+## Version 3.0.0b1
+
+- **Bug fix**: A partially imported yesterday (portal published only some quarter-hours) could be treated as finished for the rest of the day, permanently locking short hours into the Energy dashboard. Yesterday is now re-fetched and rewritten until its full local day is present
+- **Bug fix**: An empty day after stored history (or after a successful day in the same walk) was treated as a leading gap and skipped, so later days were written on a running sum that omitted the hole. Empty or short closed days now stop the walk and raise **Repairs**; only leading empty days with no prior statistics are skipped. Empty/unpublished yesterday stays a silent retry
+- **Bug fix**: Disabling history import (`history_days = 0`) imported nothing at all, including yesterday. Ongoing import always covers at least yesterday; `history_days` only adds older days
+- **Bug fix**: Yesterday sensors used the portal's `sumActual*` totals, which do not match the filtered hourly kWh written to statistics. Both now share the same start-in-day aggregation
+- **Bug fix**: A second register reading in an already-imported hour was dropped; the open bucket is now upserted. Monthly VT/NT cost series are fully rebuilt when price history changes
+- **Bug fix**: The import-paused repair had no working Fix flow (issue id was entry-scoped and the handler lived on the config flow). Issue id is now `import_paused`, with the entry id in issue data, and `repairs.py` runs the confirm → reimport flow
+- **New feature**: Structurally invalid portal payloads (unequal arrays, non-15-minute gaps, negatives, truncated registry pages, VT+NT≠total) pause the import: nothing is written for that day, later days are not imported, and a warning appears in **Repairs** with an **Import again** action. A `sumActual*` mismatch only logs a warning; the day is still imported from the quarter arrays. `ssd_ims.reimport_statistics` with a date (and the repair confirm) rebases from that local midnight through yesterday; scheduled polls never rewrite a closed day
+- **Internal**: Reprice refresh runs as a config-entry background task so unload cancels it; 7-digit portal timestamps no longer lose their timezone offset when truncated for Python's `fromisoformat`
+
 ## Version 2.5.0
 
 - **New feature**: Price history for supplier prices (#33). With `sse_ezona` prices, each hour's cost uses the price valid in that hour, read from the price sensor's hourly mean in Home Assistant's long-term statistics. A price change applies from its hour on, and recomputing recent hours (when a register reading arrives) keeps the old prices for the hours before the change. Monthly VT/NT costs are priced the same way. Hours before the sensor's first recorded hour use its first known price. Prices from the options still apply to every hour, as before.

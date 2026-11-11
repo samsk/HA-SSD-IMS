@@ -482,8 +482,16 @@ class SsdImsApiClient:
             )
             raise RuntimeError("Invalid registry data response format")
 
+        rows = data["rows"]
+        page = data.get("page") if isinstance(data.get("page"), dict) else {}
+        total_rows = page.get("totalRows")
+        if isinstance(total_rows, int):
+            from .helpers import validate_registry_page
+
+            validate_registry_page(total_rows, len(rows))
+
         readings: list[RegistryReading] = []
-        for row in data["rows"]:
+        for row in rows:
             values = row.get("values") if isinstance(row, dict) else None
             try:
                 readings.append(RegistryReading.from_row(values or []))

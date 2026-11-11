@@ -2,19 +2,32 @@
 
 import logging
 import re
+from datetime import date
 
+import voluptuous as vol
 from aiohttp import ClientError
 from pydantic import ValidationError
 
 from homeassistant.config_entries import ConfigEntry
 from homeassistant.const import CONF_PASSWORD, CONF_USERNAME
-from homeassistant.core import DOMAIN as HOMEASSISTANT_DOMAIN, HomeAssistant
-from homeassistant.exceptions import ConfigEntryAuthFailed, ConfigEntryNotReady
+from homeassistant.core import (
+    DOMAIN as HOMEASSISTANT_DOMAIN,
+    HomeAssistant,
+    ServiceCall,
+)
+from homeassistant.exceptions import (
+    ConfigEntryAuthFailed,
+    ConfigEntryNotReady,
+    HomeAssistantError,
+)
+from homeassistant.helpers import config_validation as cv
 from homeassistant.helpers import issue_registry as ir
 from homeassistant.helpers.aiohttp_client import async_get_clientsession
 
 from .api_client import SsdImsApiClient
 from .const import (
+    ATTR_DATE,
+    ATTR_ENTRY_ID,
     CONF_HISTORY_DAYS,
     CONF_POD_NAME_MAPPING,
     CONF_POINT_OF_DELIVERY,
@@ -25,6 +38,8 @@ from .const import (
     DEFAULT_POINT_OF_DELIVERY,
     DEFAULT_SCAN_INTERVAL,
     DOMAIN,
+    ISSUE_IMPORT_PAUSED,
+    SERVICE_REIMPORT_STATISTICS,
 )
 from .coordinator import SsdImsDataCoordinator
 from .models import PointOfDelivery
@@ -34,6 +49,13 @@ _LOGGER = logging.getLogger(__name__)
 PLATFORMS = ["sensor"]
 
 type SsdImsConfigEntry = ConfigEntry[SsdImsDataCoordinator]
+
+SERVICE_REIMPORT_SCHEMA = vol.Schema(
+    {
+        vol.Optional(ATTR_ENTRY_ID): cv.string,
+        vol.Optional(ATTR_DATE): cv.date,
+    }
+)
 
 
 def _async_clear_reauth_issue(hass: HomeAssistant, entry_id: str) -> None:
@@ -53,6 +75,13 @@ def _async_clear_reauth_issue(hass: HomeAssistant, entry_id: str) -> None:
     ir.async_delete_issue(
         hass, HOMEASSISTANT_DOMAIN, f"config_entry_reauth_{DOMAIN}_{entry_id}"
     )
+
+
+def _async_clear_import_pause_issue(
+    hass: HomeAssistant, _entry_id: str
+) -> None:
+    """Delete the shared import-paused repair issue, if one exists."""
+    ir.async_delete_issue(hass, DOMAIN, ISSUE_IMPORT_PAUSED)
 
 
 async def _async_get_pods(
@@ -118,15 +147,63 @@ async def async_setup_entry(hass: HomeAssistant, entry: SsdImsConfigEntry) -> bo
     await coordinator.async_config_entry_first_refresh()
 
     await hass.config_entries.async_forward_entry_setups(entry, PLATFORMS)
+    _async_register_services(hass)
 
     return True
+
+
+def _async_register_services(hass: HomeAssistant) -> None:
+    """Register domain services once for all config entries."""
+    if hass.services.has_service(DOMAIN, SERVICE_REIMPORT_STATISTICS):
+        return
+
+    async def _handle_reimport(call: ServiceCall) -> None:
+        """Re-fetch and rewrite one local day of statistics."""
+        entry_id: str | None = call.data.get(ATTR_ENTRY_ID)
+        day: date | None = call.data.get(ATTR_DATE)
+        entries = hass.config_entries.async_entries(DOMAIN)
+        if entry_id:
+            entry = next((e for e in entries if e.entry_id == entry_id), None)
+            if entry is None or not isinstance(
+                getattr(entry, "runtime_data", None), SsdImsDataCoordinator
+            ):
+                raise HomeAssistantError(f"Unknown SSD IMS entry: {entry_id}")
+            targets = [entry]
+        else:
+            targets = [
+                e
+                for e in entries
+                if isinstance(getattr(e, "runtime_data", None), SsdImsDataCoordinator)
+            ]
+            if not targets:
+                raise HomeAssistantError("No loaded SSD IMS entries to reimport")
+
+        for target in targets:
+            coordinator: SsdImsDataCoordinator = target.runtime_data
+            await coordinator.async_reimport(day)
+
+    hass.services.async_register(
+        DOMAIN,
+        SERVICE_REIMPORT_STATISTICS,
+        _handle_reimport,
+        schema=SERVICE_REIMPORT_SCHEMA,
+    )
 
 
 async def async_unload_entry(hass: HomeAssistant, entry: SsdImsConfigEntry) -> bool:
     """Unload a config entry."""
     if unload_ok := await hass.config_entries.async_unload_platforms(entry, PLATFORMS):
-        entry.runtime_data.async_unwatch_supplier_prices()
+        coordinator = entry.runtime_data
+        coordinator.async_unwatch_supplier_prices()
+        coordinator.async_clear_import_pause()
         entry.runtime_data = None
+        if not any(
+            isinstance(getattr(e, "runtime_data", None), SsdImsDataCoordinator)
+            for e in hass.config_entries.async_entries(DOMAIN)
+            if e.entry_id != entry.entry_id
+        ):
+            if hass.services.has_service(DOMAIN, SERVICE_REIMPORT_STATISTICS):
+                hass.services.async_remove(DOMAIN, SERVICE_REIMPORT_STATISTICS)
 
     return unload_ok
 
@@ -137,9 +214,10 @@ async def async_remove_entry(hass: HomeAssistant, entry: SsdImsConfigEntry) -> N
     Core aborts any in-progress reauth *flow* for the removed entry, but
     leaves a persisted reauth repair issue in place if one exists (see
     `_async_clear_reauth_issue`), which would otherwise reference a dead
-    entry_id forever.
+    entry_id forever. The same applies to our own import-paused issue.
     """
     _async_clear_reauth_issue(hass, entry.entry_id)
+    _async_clear_import_pause_issue(hass, entry.entry_id)
 
 
 async def async_migrate_entry(hass: HomeAssistant, entry: ConfigEntry) -> bool:

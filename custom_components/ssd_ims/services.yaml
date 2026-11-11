@@ -1,0 +1,11 @@
+reimport_statistics:
+  fields:
+    entry_id:
+      required: false
+      selector:
+        config_entry:
+          integration: ssd_ims
+    date:
+      required: false
+      selector:
+        date:

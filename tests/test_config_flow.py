@@ -365,3 +365,44 @@ async def test_options_flow_prices_are_optional(hass: HomeAssistant):
     assert result["type"] is FlowResultType.CREATE_ENTRY
     assert "price_vt" not in entry.options
     assert "price_nt" not in entry.options
+
+
+async def test_import_paused_repair_reads_entry_id_and_reimports(
+    hass: HomeAssistant,
+):
+    """Repairs fix flow reads entry_id from issue data and reimports."""
+    from custom_components.ssd_ims.coordinator import SsdImsDataCoordinator
+    from custom_components.ssd_ims.repairs import ImportPausedRepairFlow
+
+    entry = MockConfigEntry(
+        domain=DOMAIN,
+        unique_id="test_user",
+        data={
+            "username": "test_user",
+            "password": "test_pass",
+            CONF_POINT_OF_DELIVERY: [POD_ID],
+            CONF_POD_NAME_MAPPING: {},
+        },
+    )
+    entry.add_to_hass(hass)
+    coordinator = SsdImsDataCoordinator.__new__(SsdImsDataCoordinator)
+    coordinator.async_reimport = AsyncMock()
+    coordinator._import_pause = {
+        "pod_name": "Home",
+        "day": "2026-10-22",
+        "reason": "empty",
+        "statistic_id": "ssd_ims:home_actual_consumption",
+    }
+    entry.runtime_data = coordinator
+
+    flow = ImportPausedRepairFlow()
+    flow.hass = hass
+    flow.data = {"entry_id": entry.entry_id}
+
+    result = await flow.async_step_init()
+    assert result["type"] is FlowResultType.FORM
+    assert result["step_id"] == "confirm"
+
+    result = await flow.async_step_confirm(user_input={})
+    assert result["type"] is FlowResultType.CREATE_ENTRY
+    coordinator.async_reimport.assert_awaited_once_with()
