@@ -6,7 +6,6 @@ from datetime import date
 
 import voluptuous as vol
 from aiohttp import ClientError
-from pydantic import ValidationError
 
 from homeassistant.config_entries import ConfigEntry
 from homeassistant.const import CONF_PASSWORD, CONF_USERNAME
@@ -16,7 +15,6 @@ from homeassistant.core import (
     ServiceCall,
 )
 from homeassistant.exceptions import (
-    ConfigEntryAuthFailed,
     ConfigEntryNotReady,
     HomeAssistantError,
 )
@@ -38,6 +36,7 @@ from .const import (
     DEFAULT_POINT_OF_DELIVERY,
     DEFAULT_SCAN_INTERVAL,
     DOMAIN,
+    EVENT_CLOUD_LINK,
     ISSUE_IMPORT_PAUSED,
     SERVICE_REIMPORT_STATISTICS,
 )
@@ -46,7 +45,7 @@ from .models import PointOfDelivery
 
 _LOGGER = logging.getLogger(__name__)
 
-PLATFORMS = ["sensor"]
+PLATFORMS = ["sensor", "binary_sensor"]
 
 type SsdImsConfigEntry = ConfigEntry[SsdImsDataCoordinator]
 
@@ -77,9 +76,7 @@ def _async_clear_reauth_issue(hass: HomeAssistant, entry_id: str) -> None:
     )
 
 
-def _async_clear_import_pause_issue(
-    hass: HomeAssistant, _entry_id: str
-) -> None:
+def _async_clear_import_pause_issue(hass: HomeAssistant, _entry_id: str) -> None:
     """Delete the shared import-paused repair issue, if one exists."""
     ir.async_delete_issue(hass, DOMAIN, ISSUE_IMPORT_PAUSED)
 
@@ -105,19 +102,10 @@ async def async_setup_entry(hass: HomeAssistant, entry: SsdImsConfigEntry) -> bo
 
     try:
         authenticated = await api_client.authenticate(username, password)
-    except (ClientError, TimeoutError, RuntimeError, ValidationError) as err:
-        # Network/timeout/server/unexpected-response problems are transient
-        # or portal-side, not proof the credentials are wrong — let HA retry
-        # instead of forcing the user through a spurious reauth flow.
+    except (ClientError, TimeoutError, RuntimeError) as err:
+        # Network/timeout/server problems are transient or portal-side —
+        # let HA retry instead of forcing the user through a reauth flow.
         raise ConfigEntryNotReady(f"Cannot connect to SSD IMS: {err}") from err
-
-    if not authenticated:
-        raise ConfigEntryAuthFailed("Authentication failed for SSD IMS")
-
-    # Setup just succeeded, so whatever previously triggered a reauth-required
-    # repair issue for this entry (if any) is resolved now, even if the user
-    # never went through the reauth flow itself.
-    _async_clear_reauth_issue(hass, entry.entry_id)
 
     # entry.options takes precedence over entry.data for user-adjustable settings
     scan_interval = entry.options.get(
@@ -143,8 +131,20 @@ async def async_setup_entry(hass: HomeAssistant, entry: SsdImsConfigEntry) -> bo
     coordinator = SsdImsDataCoordinator(hass, api_client, config, entry)
     entry.runtime_data = coordinator
 
-    # First refresh populates coordinator.data before platforms register entities
-    await coordinator.async_config_entry_first_refresh()
+    if authenticated:
+        # Recovery after reauth: fire once when the link comes back.
+        reauth_issue_id = f"config_entry_reauth_{DOMAIN}_{entry.entry_id}"
+        if ir.async_get(hass).async_get_issue(HOMEASSISTANT_DOMAIN, reauth_issue_id):
+            hass.bus.async_fire(
+                EVENT_CLOUD_LINK, {"entry_id": entry.entry_id, "ok": True}
+            )
+        _async_clear_reauth_issue(hass, entry.entry_id)
+        # First refresh populates coordinator.data before platforms register.
+        await coordinator.async_config_entry_first_refresh()
+    else:
+        # Keep the entry loaded so the cloud-link sensor stays available.
+        # Skip the first refresh — no portal calls with a rejected password.
+        coordinator.set_cloud_link_ok(False)
 
     await hass.config_entries.async_forward_entry_setups(entry, PLATFORMS)
     _async_register_services(hass)

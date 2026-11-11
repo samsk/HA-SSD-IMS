@@ -16,7 +16,6 @@ from homeassistant.components.recorder.statistics import (
 from homeassistant.config_entries import ConfigEntry
 from homeassistant.const import Platform
 from homeassistant.core import CALLBACK_TYPE, CoreState, Event, HomeAssistant, callback
-from homeassistant.exceptions import ConfigEntryAuthFailed
 from homeassistant.helpers import entity_registry as er
 from homeassistant.helpers import issue_registry as ir
 from homeassistant.helpers.event import async_track_state_change_event
@@ -41,6 +40,7 @@ from .const import (
     DEFAULT_HISTORY_DAYS,
     DEFAULT_SCAN_INTERVAL,
     DOMAIN,
+    EVENT_CLOUD_LINK,
     ISSUE_IMPORT_PAUSED,
     REGISTER_STAT_CONSUMPTION_NT,
     REGISTER_STAT_CONSUMPTION_VT,
@@ -84,6 +84,7 @@ class SsdImsDataCoordinator(DataUpdateCoordinator):
         entry: ConfigEntry,
     ) -> None:
         """Initialize coordinator."""
+        self.hass = hass
         self.api_client = api_client
         self.config = config
         self.entry = entry
@@ -113,6 +114,8 @@ class SsdImsDataCoordinator(DataUpdateCoordinator):
         # Optional local day that a manual reimport must rewrite even if hours
         # already exist for it.
         self._force_reimport_day: date | None = None
+        # Portal accepted the last login (connectivity binary sensor / event).
+        self.cloud_link_ok = True
 
         scan_interval = timedelta(
             minutes=config.get(CONF_SCAN_INTERVAL, DEFAULT_SCAN_INTERVAL)
@@ -124,6 +127,22 @@ class SsdImsDataCoordinator(DataUpdateCoordinator):
             update_interval=scan_interval,
             config_entry=entry,
         )
+
+    def set_cloud_link_ok(self, ok: bool) -> None:
+        """Update cloud-link state; fire event and start reauth on drop only."""
+        if self.cloud_link_ok == ok:
+            return
+        self.cloud_link_ok = ok
+        self.hass.bus.async_fire(
+            EVENT_CLOUD_LINK,
+            {"entry_id": self.entry.entry_id, "ok": ok},
+        )
+        # During setup the parent coordinator may not have finished __init__
+        # yet when login fails — the binary sensor reads the flag on create.
+        if hasattr(self, "_listeners"):
+            self.async_update_listeners()
+        if not ok:
+            self.entry.async_start_reauth(self.hass)
 
     async def update_config(self, new_config: dict[str, Any]) -> None:
         """Update coordinator configuration."""
@@ -147,6 +166,10 @@ class SsdImsDataCoordinator(DataUpdateCoordinator):
     async def _async_update_data(self) -> dict[str, Any]:
         """Fetch data from API and update statistics."""
         try:
+            if not self.cloud_link_ok:
+                _LOGGER.debug("Cloud link down — skipping API calls until reauth")
+                return self.data or {}
+
             today = dt_util.now().date()
 
             # Smart polling: the portal publishes data once per day after midnight.
@@ -201,6 +224,8 @@ class SsdImsDataCoordinator(DataUpdateCoordinator):
                     chart_data = await self.api_client.get_chart_data(
                         pod_id, period_start, period_end
                     )
+                except SsdImsAuthenticationError:
+                    raise
                 except Exception as e:
                     _LOGGER.error(
                         "Error fetching yesterday data for POD %s: %s", pod_id, e
@@ -233,8 +258,10 @@ class SsdImsDataCoordinator(DataUpdateCoordinator):
             _LOGGER.info("Data update for all sensors completed.")
             return all_pod_data
 
-        except ConfigEntryAuthFailed:
-            raise
+        except SsdImsAuthenticationError as err:
+            _LOGGER.error("Cloud link lost: %s", err)
+            self.set_cloud_link_ok(False)
+            return self.data or {}
         except Exception as e:
             _LOGGER.error("Error updating data: %s", e)
             raise UpdateFailed(f"Error updating data: {e}") from e
@@ -247,6 +274,10 @@ class SsdImsDataCoordinator(DataUpdateCoordinator):
         """
         try:
             await self._update_statistics(pod_ids)
+        except SsdImsAuthenticationError as err:
+            _LOGGER.error("Cloud link lost during backfill: %s", err)
+            self.set_cloud_link_ok(False)
+            return
         except Exception:
             _LOGGER.exception("Error during background statistics backfill")
             return
@@ -608,6 +639,8 @@ class SsdImsDataCoordinator(DataUpdateCoordinator):
                         )
                         all_up_to_date = False
                         break
+                    except SsdImsAuthenticationError:
+                        raise
                     except Exception as e:
                         _LOGGER.error(
                             "Failed to fetch or process data for %s on %s: %s",
@@ -1336,12 +1369,7 @@ class SsdImsDataCoordinator(DataUpdateCoordinator):
 
     async def _discover_pods(self) -> None:
         """Discover points of delivery."""
-        try:
-            pods = await self.api_client.get_points_of_delivery()
-        except SsdImsAuthenticationError as e:
-            raise ConfigEntryAuthFailed(
-                "Authentication failed during POD discovery"
-            ) from e
+        pods = await self.api_client.get_points_of_delivery()
 
         if not pods:
             raise RuntimeError("No points of delivery found")

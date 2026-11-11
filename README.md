@@ -124,7 +124,23 @@ Entity registrov majú atribúty `reading_time` (čas odpočtu) a `meter_serial_
 
 ## Riešenie problémov
 
-- **Prihlásenie zlyhalo:** overte meno a heslo na <https://ims.ssd.sk>. Ak sa heslo zmenilo, Home Assistant ponúkne opätovné prihlásenie.
+- **Prihlásenie zlyhalo:** overte meno a heslo na <https://ims.ssd.sk>. Ak heslo vypršalo alebo sa zmenilo, zmeňte ho na portáli a v Home Assistant použite **Znova prihlásiť**. Diagnostický senzor **Spojenie s cloudom** zostane dostupný (vypnutý = portál odmietol heslo). Automatizáciu môžete naviazať na jeho stav alebo na udalosť `ssd_ims_cloud_link`:
+
+```yaml
+triggers:
+  - trigger: state
+    entity_id: binary_sensor.moj_ucet_spojenie_s_cloudom
+    to: "off"
+```
+
+```yaml
+triggers:
+  - trigger: event
+    event_type: ssd_ims_cloud_link
+    event_data:
+      ok: false
+```
+
 - **Panel Energie je prázdny:** počkajte na prvú aktualizáciu a overte, či máte v paneli zvolené správne štatistiky. Dnešné údaje portál ešte nemá.
 - **Import pozastavený (Opravy):** ak portál vráti neplatné, prázdne alebo neúplné údaje za uzavretý deň (nie včerajšok, ktorý ešte môže dorážať), integrácia ich nezapíše a novšie dni neimportuje, aby v súčte nevznikla medzera. V **Nastavenia** → **Systém** → **Opravy** uvidíte upozornenie s dôvodom. Skontrolujte údaje na portáli a kliknite **Importovať znova**, alebo použite akciu `ssd_ims.reimport_statistics` (voliteľne s dátumom dňa). Explicitný dátum prepíše ten deň a všetky novšie dni až po včerajšok; plánované obnovenie uzavreté dni neprepíše. Ďalšie plánované obnovenie zablokovaný deň skúsi aj samo; po úspešnom dni upozornenie zmizne.
 - **Chyba certifikátu SSL:** aktualizujte certifikáty certifikačných autorít vo vašom systéme.
@@ -146,3 +162,4 @@ Licencia AGPLv3, pozri [LICENSE](LICENSE). Vývoj a prispievanie (v angličtine)
 ## Prispievatelia
 
 *baracudaz* - https://github.com/baracudaz/ssd-ims
+*samsk*     - https://github.com/samsk/HA-SSD-IMS

@@ -1,5 +1,9 @@
 # Changelog
 
+## Version 3.0.0b2
+
+- **Bug fix**: An HTTP 200 login body that is not a valid profile (for example the portal's expired-password redirect) raised an unexpected error and could leave setup retrying forever. Any non-profile login response is now a failed login. The config entry stays loaded, a diagnostic **Cloud link** connectivity sensor shows the state, `ssd_ims_cloud_link` fires once per change, and Home Assistant starts **Re-authenticate**
+
 ## Version 3.0.0b1
 
 - **Bug fix**: A partially imported yesterday (portal published only some quarter-hours) could be treated as finished for the rest of the day, permanently locking short hours into the Energy dashboard. Yesterday is now re-fetched and rewritten until its full local day is present

@@ -97,12 +97,11 @@ class SsdImsApiClient:
     async def authenticate(self, username: str, password: str) -> bool:
         """Authenticate with SSD IMS portal.
 
-        Returns False only when the portal itself rejects the credentials
-        (401/403/422 — the portal actually answers a wrong username or
-        password with 422, not 401). Network errors, timeouts, and unexpected/invalid
-        responses are raised instead of being folded into False, so callers
-        can tell "wrong password" apart from "couldn't reach the portal"
-        (e.g. ConfigEntryAuthFailed vs. ConfigEntryNotReady).
+        Returns False when the portal rejects the credentials (401/403/422)
+        or returns HTTP 200 with a body that is not a valid AuthResponse
+        (expired password, unknown account-state payload, etc.). Network
+        errors, timeouts, and 5xx are raised so callers can tell "wrong
+        password" apart from "couldn't reach the portal".
         """
         # Store credentials for re-authentication
         self._username = username
@@ -138,7 +137,23 @@ class SsdImsApiClient:
                 self._raise_for_status(response.status, " during login")
 
             data = await response.json()
-            AuthResponse(**data)  # Validate response structure
+            try:
+                AuthResponse(**data)
+            except ValidationError:
+                # HTTP 200 with a non-profile body (e.g. expiredPasswordRedirect).
+                # Log keys only — the body may contain a one-time redirect URL.
+                keys = (
+                    sorted(data.keys())
+                    if isinstance(data, dict)
+                    else type(data).__name__
+                )
+                _LOGGER.warning(
+                    "Authentication failed: unexpected login response keys=%s",
+                    keys,
+                )
+                self._authenticated = False
+                return False
+
             self._authenticated = True
 
             # Extract session token from cookies

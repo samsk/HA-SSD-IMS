@@ -228,7 +228,7 @@ class TestSsdImsApiClient:
             being reported as invalid credentials — callers (e.g. __init__.py)
             need to tell "wrong password" apart from "couldn't reach the
             portal" so they can raise ConfigEntryNotReady instead of
-            ConfigEntryAuthFailed."""
+            starting reauth."""
             with patch.object(api_client._session, "post") as mock_post:
                 mock_post.side_effect = Exception("Network error")
 
@@ -236,6 +236,32 @@ class TestSsdImsApiClient:
                     await api_client.authenticate("test_user", "test_pass")
 
                 assert api_client._authenticated is False
+
+        @pytest.mark.parametrize(
+            "body",
+            [
+                {"expiredPasswordRedirect": "https://ims.ssd.sk/change"},
+                {"unexpected": True, "accountState": "locked"},
+            ],
+            ids=["expired_password", "unknown_keys"],
+        )
+        async def test_non_profile_200_is_failed_login(self, api_client, body, caplog):
+            """HTTP 200 without a valid AuthResponse is a rejected login."""
+            with patch.object(api_client._session, "post") as mock_post:
+                mock_response = AsyncMock()
+                mock_response.status = 200
+                mock_response.json = AsyncMock(return_value=body)
+                mock_response.headers = {"content-type": "application/json"}
+                mock_response.cookies = {}
+                mock_post.return_value.__aenter__.return_value = mock_response
+
+                result = await api_client.authenticate("test_user", "expired")
+
+                assert result is False
+                assert api_client._authenticated is False
+            assert "unexpected login response keys=" in caplog.text
+            # Redirect URL / body values must not be logged.
+            assert "https://ims.ssd.sk/change" not in caplog.text
 
     class TestPointsOfDelivery:
         """Test POD discovery functionality."""

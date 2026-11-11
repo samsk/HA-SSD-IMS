@@ -253,6 +253,7 @@ def _make_coordinator(api_client, config, data=None):
     coordinator._unsub_supplier_registry = None
     coordinator._import_pause = None
     coordinator._force_reimport_day = None
+    coordinator.cloud_link_ok = True
     coordinator.data = data
     # No supplier integration installed unless a test says otherwise
     coordinator._supplier_prices = MagicMock(return_value=None)

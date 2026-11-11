@@ -95,6 +95,9 @@ ATTR_DATE: Final = "date"
 # Repair issue while a structurally invalid day blocks forward import
 ISSUE_IMPORT_PAUSED: Final = "import_paused"
 
+# Fired when the portal cloud link goes off or comes back on
+EVENT_CLOUD_LINK: Final = "ssd_ims_cloud_link"
+
 # Sensor types
 SENSOR_TYPE_ACTUAL_CONSUMPTION: Final = "actual_consumption"
 SENSOR_TYPE_ACTUAL_SUPPLY: Final = "actual_supply"

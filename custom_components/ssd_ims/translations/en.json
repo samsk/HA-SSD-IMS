@@ -11,7 +11,7 @@
       },
       "reauth_confirm": {
         "title": "Re-authenticate with SSD IMS",
-        "description": "Your credentials for {username} are no longer valid. Please enter your current password to restore the connection.",
+        "description": "Your credentials for {username} are no longer valid (wrong, changed, or expired on the portal). If the password expired, change it at https://ims.ssd.sk, then enter the current password here.",
         "data": {
           "username": "Username",
           "password": "Password"
@@ -43,7 +43,7 @@
       }
     },
     "error": {
-      "invalid_auth": "Invalid username or password",
+      "invalid_auth": "Invalid username or password, or the portal password has expired",
       "cannot_connect": "Cannot connect to SSD IMS portal",
       "no_pods_selected": "Please select at least one Point of Delivery",
       "invalid_format": "Name must contain at least one letter or number",
@@ -101,6 +101,13 @@
           "price_vt": "Final price in EUR per kWh including VAT and all per-kWh fees, e.g. from your supplier invoice.",
           "price_nt": "Final price in EUR per kWh including VAT and all per-kWh fees, e.g. from your supplier invoice. Leave empty for single-rate tariffs (D1/D2) — the VT price is then used for all consumption."
         }
+      }
+    }
+  },
+  "entity": {
+    "binary_sensor": {
+      "cloud_link": {
+        "name": "Cloud link"
       }
     }
   },

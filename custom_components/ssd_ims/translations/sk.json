@@ -11,7 +11,7 @@
       },
       "reauth_confirm": {
         "title": "Znova sa prihláste do SSD IMS",
-        "description": "Vaše prihlasovacie údaje pre {username} už nie sú platné. Zadajte aktuálne heslo na obnovenie pripojenia.",
+        "description": "Vaše prihlasovacie údaje pre {username} už nie sú platné (nesprávne, zmenené alebo vypršané na portáli). Ak heslo vypršalo, zmeňte ho na https://ims.ssd.sk a potom tu zadajte aktuálne heslo.",
         "data": {
           "username": "Používateľské meno",
           "password": "Heslo"
@@ -43,7 +43,7 @@
       }
     },
     "error": {
-      "invalid_auth": "Neplatné používateľské meno alebo heslo",
+      "invalid_auth": "Neplatné používateľské meno alebo heslo, alebo heslo na portáli vypršalo",
       "cannot_connect": "Nedá sa pripojiť k SSD IMS portálu",
       "no_pods_selected": "Vyberte aspoň jedno odberné miesto",
       "invalid_format": "Názov musí obsahovať aspoň jedno písmeno alebo číslo",
@@ -101,6 +101,13 @@
           "price_vt": "Koncová cena za 1 kWh v eurách vrátane DPH a všetkých poplatkov.",
           "price_nt": "Koncová cena za 1 kWh v eurách vrátane DPH a všetkých poplatkov. Pri jednotarifnej sadzbe pole nechajte prázdne – celá spotreba sa vypočíta s cenou za VT."
         }
+      }
+    }
+  },
+  "entity": {
+    "binary_sensor": {
+      "cloud_link": {
+        "name": "Spojenie s cloudom"
       }
     }
   },

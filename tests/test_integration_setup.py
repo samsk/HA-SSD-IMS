@@ -227,9 +227,9 @@ async def test_password_rejected_with_422_starts_reauth_flow(hass: HomeAssistant
     """Regression test for issue #25: after the user changed their password
     on the portal, login got a 422 which was treated as a transient error —
     setup retried forever (ConfigEntryNotReady) with the stale password and
-    Home Assistant never offered a way to enter the new one. Runs the real
-    API client (only the HTTP session is mocked) so the portal's actual
-    status code flows through the whole setup path."""
+    Home Assistant never offered a way to enter the new one. The entry now
+    stays loaded so the cloud-link sensor remains available, and reauth
+    starts. Runs the real API client (only the HTTP session is mocked)."""
     entry = MockConfigEntry(
         domain=DOMAIN,
         version=2,
@@ -248,10 +248,11 @@ async def test_password_rejected_with_422_starts_reauth_flow(hass: HomeAssistant
         "custom_components.ssd_ims.async_get_clientsession",
         return_value=_session_rejecting_login(),
     ):
-        assert not await hass.config_entries.async_setup(entry.entry_id)
+        assert await hass.config_entries.async_setup(entry.entry_id)
         await hass.async_block_till_done()
 
-    assert entry.state is ConfigEntryState.SETUP_ERROR
+    assert entry.state is ConfigEntryState.LOADED
+    assert entry.runtime_data.cloud_link_ok is False
     flows = hass.config_entries.flow.async_progress_by_handler(DOMAIN)
     assert [flow["context"]["source"] for flow in flows] == ["reauth"]
     assert flows[0]["context"]["entry_id"] == entry.entry_id

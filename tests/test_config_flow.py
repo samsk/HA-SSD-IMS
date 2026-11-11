@@ -163,6 +163,36 @@ async def test_portal_422_login_shows_invalid_auth(hass: HomeAssistant):
     assert result["errors"] == {"base": "invalid_auth"}
 
 
+async def test_expired_password_200_shows_invalid_auth(hass: HomeAssistant):
+    """HTTP 200 with expiredPasswordRedirect is a failed login, not cannot_connect."""
+    response = MagicMock()
+    response.status = 200
+    response.json = AsyncMock(
+        return_value={"expiredPasswordRedirect": "https://ims.ssd.sk/change"}
+    )
+    response.headers = {"content-type": "application/json"}
+    response.cookies = {}
+    session = MagicMock()
+    session.post.return_value.__aenter__ = AsyncMock(return_value=response)
+    session.post.return_value.__aexit__ = AsyncMock(return_value=None)
+
+    with patch(
+        "custom_components.ssd_ims.config_flow.async_get_clientsession",
+        return_value=session,
+    ):
+        result = await hass.config_entries.flow.async_init(
+            DOMAIN, context={"source": config_entries.SOURCE_USER}
+        )
+        result = await hass.config_entries.flow.async_configure(
+            result["flow_id"],
+            {"username": "test_user", "password": "expired"},
+        )
+
+    assert result["type"] is FlowResultType.FORM
+    assert result["step_id"] == "user"
+    assert result["errors"] == {"base": "invalid_auth"}
+
+
 async def test_network_error_shows_cannot_connect(hass: HomeAssistant):
     client = MagicMock()
     client.authenticate = AsyncMock(side_effect=TimeoutError("timed out"))

@@ -5,7 +5,6 @@ from datetime import UTC, datetime, timedelta
 from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
-from homeassistant.exceptions import ConfigEntryAuthFailed
 from homeassistant.util import dt as dt_util
 
 from custom_components.ssd_ims.api_client import SsdImsAuthenticationError
@@ -27,12 +26,15 @@ def _make_coordinator(api_client, config):
     coordinator.entry = MagicMock()
     coordinator.entry.entry_id = "test-entry"
     coordinator.entry.async_create_background_task = MagicMock()
+    coordinator.entry.async_start_reauth = MagicMock()
     coordinator.pods = {}
     coordinator._last_successful_data_date = None
     coordinator._stats_lock = asyncio.Lock()
     coordinator._import_pause = None
     coordinator._force_reimport_day = None
+    coordinator.cloud_link_ok = True
     coordinator.data = None
+    coordinator.async_update_listeners = MagicMock()
     return coordinator
 
 
@@ -368,18 +370,29 @@ class TestPodDiscovery:
         assert coordinator.pods == {pod_a.id: pod_a, pod_b.id: pod_b}
         api_client.set_cached_pods.assert_called_once_with([pod_a, pod_b])
 
-    async def test_authentication_error_becomes_config_entry_auth_failed(self):
-        """A typed auth failure from the API client must be translated into
-        ConfigEntryAuthFailed, not left to fragile string matching."""
+    async def test_authentication_error_turns_cloud_link_off(self):
+        """A typed auth failure during update turns the cloud link off once."""
+        from custom_components.ssd_ims.const import EVENT_CLOUD_LINK
+
         api_client = MagicMock()
         api_client.get_points_of_delivery = AsyncMock(
             side_effect=SsdImsAuthenticationError("Not authenticated")
         )
 
         coordinator = _make_coordinator(api_client, {})
+        result = await coordinator._async_update_data()
 
-        with pytest.raises(ConfigEntryAuthFailed):
-            await coordinator._discover_pods()
+        assert result == {}
+        assert coordinator.cloud_link_ok is False
+        coordinator.entry.async_start_reauth.assert_called_once_with(coordinator.hass)
+        coordinator.hass.bus.async_fire.assert_called_once_with(
+            EVENT_CLOUD_LINK, {"entry_id": "test-entry", "ok": False}
+        )
+
+        # A second failure must not fire the event or reauth again.
+        await coordinator._async_update_data()
+        assert coordinator.hass.bus.async_fire.call_count == 1
+        assert coordinator.entry.async_start_reauth.call_count == 1
 
 
 def _partial_day(day_start: datetime, hours: int = 6) -> ChartData:
