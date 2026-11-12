@@ -117,7 +117,7 @@ def test_trend_sensor_reads_trends_and_wow_attribute():
     assert low_sensor.native_value == 520.0
 
 
-def test_average_trend_sensors_round_to_three_decimals():
+def test_float_trend_sensors_round_to_three_decimals():
     coordinator = MagicMock()
     coordinator.config = {}
     coordinator.yesterday_complete = True
@@ -126,17 +126,30 @@ def test_average_trend_sensors_round_to_three_decimals():
             "trends": {
                 "avg_7d_kwh": 73.5952857142859,
                 "avg_30d_kwh": 50.1091666666666,
+                "load_factor_pct": 46.8506384408602,
+                "export_share_pct": 0.0017930144158359,
+                "wow_delta_kwh": -2.5000001,
+                "wow_percent": -10.0055555,
             }
         }
     }
-    avg7 = next(d for d in TREND_SENSORS if d[0] == "avg_7d_kwh")
-    avg30 = next(d for d in TREND_SENSORS if d[0] == "avg_30d_kwh")
-    s7 = SsdImsTrendSensor(coordinator, "pod1", "Home", avg7)
-    s30 = SsdImsTrendSensor(coordinator, "pod1", "Home", avg30)
-    assert s7.native_value == 73.595
-    assert s30.native_value == 50.109
-    assert s7.suggested_display_precision == 3
-    assert s30.suggested_display_precision == 3
+    cases = (
+        ("avg_7d_kwh", 73.595),
+        ("avg_30d_kwh", 50.109),
+        ("load_factor_pct", 46.851),
+        ("export_share_pct", 0.002),
+        ("wow_delta_kwh", -2.5),
+    )
+    for key, expected in cases:
+        description = next(d for d in TREND_SENSORS if d[0] == key)
+        sensor = SsdImsTrendSensor(coordinator, "pod1", "Home", description)
+        assert sensor.native_value == expected
+        assert sensor.suggested_display_precision == 3
+
+    wow = next(d for d in TREND_SENSORS if d[0] == "wow_delta_kwh")
+    assert SsdImsTrendSensor(
+        coordinator, "pod1", "Home", wow
+    ).extra_state_attributes == {"wow_percent": -10.006}
 
 
 def test_yesterday_shows_zero_by_default_when_unpublished():

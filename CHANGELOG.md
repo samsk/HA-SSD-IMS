@@ -1,5 +1,9 @@
 # Changelog
 
+## Version 3.0.0b6
+
+- **Bug fix**: Export share, load factor, WoW delta / percent, and 7/30-day averages round to 3 decimal places
+
 ## Version 3.0.0b5
 
 - **New feature**: Daily portal fetch after local **03:05** plus up to 30 minutes of per-instance jitter; incomplete yesterday retries on the configured scan interval (6/12/24 h) until complete, then tomorrow's same slot

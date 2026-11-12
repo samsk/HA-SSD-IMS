@@ -424,7 +424,8 @@ class SsdImsTrendSensor(SsdImsSensor):
         self._attr_unique_id = f"{pod_id}_{unique_suffix}"
         self._attr_native_unit_of_measurement = unit
         self._attr_device_class = device_class
-        if self._data_key in ("avg_7d_kwh", "avg_30d_kwh"):
+        # Percent / kWh averages / WoW delta — avoid long float tails in the UI.
+        if not self._as_int and self._data_key != "low_demand_kw":
             self._attr_suggested_display_precision = 3
         if device_class == SensorDeviceClass.POWER:
             self._attr_state_class = SensorStateClass.MEASUREMENT
@@ -468,12 +469,10 @@ class SsdImsTrendSensor(SsdImsSensor):
         if self._as_int:
             return int(value)
         number = float(value)
-        if self._data_key in ("avg_7d_kwh", "avg_30d_kwh"):
-            return round(number, 3)
         # Chart min demand is stored as kW; expose watts without extra rounding.
         if self._data_key == "low_demand_kw":
             return number * _KW_TO_W
-        return number
+        return round(number, 3)
 
     @property
     def extra_state_attributes(self) -> dict[str, Any] | None:
@@ -485,4 +484,4 @@ class SsdImsTrendSensor(SsdImsSensor):
         percent = trends.get("wow_percent")
         if percent is None:
             return None
-        return {"wow_percent": round(float(percent), 2)}
+        return {"wow_percent": round(float(percent), 3)}
