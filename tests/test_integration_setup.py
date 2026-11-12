@@ -11,15 +11,17 @@ from datetime import UTC, datetime
 from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
-from homeassistant.config_entries import ConfigEntryState
-from homeassistant.core import DOMAIN as HOMEASSISTANT_DOMAIN, HomeAssistant
-from homeassistant.helpers import issue_registry as ir
 from homeassistant.components.recorder.statistics import (
+    StatisticMeanType,
     async_add_external_statistics,
     get_last_statistics,
     statistics_during_period,
 )
-from homeassistant.components.recorder.statistics import StatisticMeanType
+from homeassistant.config_entries import ConfigEntryState
+from homeassistant.core import DOMAIN as HOMEASSISTANT_DOMAIN
+from homeassistant.core import HomeAssistant
+from homeassistant.helpers import issue_registry as ir
+from homeassistant.util import dt as dt_util
 from pytest_homeassistant.common import MockConfigEntry
 from pytest_homeassistant.components.recorder.common import (
     async_wait_recording_done,
@@ -279,11 +281,23 @@ async def test_register_readings_imported_with_costs_and_exposed_as_sensors(
     )
     entry.add_to_hass(hass)
 
-    with patch(
-        "custom_components.ssd_ims.SsdImsApiClient", return_value=_mock_api_client()
+    # HA's test harness uses a US timezone; freeze past the daily 03:05 slot
+    # so the refresh actually hits the portal. Startup uses a background task
+    # (not awaited by block_till_done); await request_immediate_refresh so the
+    # import finishes before assertions.
+    frozen_now = datetime(2026, 11, 12, 10, 0, tzinfo=dt_util.DEFAULT_TIME_ZONE)
+    with (
+        patch(
+            "custom_components.ssd_ims.SsdImsApiClient", return_value=_mock_api_client()
+        ),
+        patch(
+            "custom_components.ssd_ims.coordinator.dt_util.now",
+            return_value=frozen_now,
+        ),
     ):
         assert await hass.config_entries.async_setup(entry.entry_id)
         await hass.async_block_till_done()
+        await entry.runtime_data.request_immediate_refresh()
     await async_wait_recording_done(hass)
 
     september_last_hour = datetime(2026, 9, 30, 21, tzinfo=UTC).timestamp()
@@ -306,7 +320,7 @@ async def test_register_readings_imported_with_costs_and_exposed_as_sensors(
     peak = hass.states.get("sensor.home_peak_demand")
     assert vt is not None and float(vt.state) == 20.0
     assert nt is not None and float(nt.state) == 210.0
-    assert peak is not None and float(peak.state) == 4.5
+    assert peak is not None and float(peak.state) == 4500.0
     assert vt.attributes["meter_serial_number"] == "M1"
 
     assert "impossible" not in caplog.text

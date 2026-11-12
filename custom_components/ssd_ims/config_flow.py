@@ -1,7 +1,7 @@
 """Configuration flow for SSD IMS integration."""
 
-import asyncio
 import logging
+import os
 from typing import Any
 
 import voluptuous as vol
@@ -31,7 +31,10 @@ from .const import (
     CONF_PRICE_NT,
     CONF_PRICE_VT,
     CONF_SCAN_INTERVAL,
+    CONF_UNPUBLISHED_AS_UNKNOWN,
     CURRENCY,
+    DEBUG_ENV,
+    DEBUG_SCAN_INTERVAL,
     DEFAULT_ENABLE_HISTORY_IMPORT,
     DEFAULT_HISTORY_DAYS,
     DEFAULT_SCAN_INTERVAL,
@@ -46,6 +49,20 @@ from .models import PointOfDelivery
 _LOGGER = logging.getLogger(__name__)
 
 
+def _debug_scan_interval_enabled() -> bool:
+    """True when SSD_IMS_DEBUG is set so the 5-minute option is offered."""
+    return bool(os.environ.get(DEBUG_ENV))
+
+
+def _scan_interval_options() -> list[str]:
+    """Selectable update intervals; 5 minutes only with SSD_IMS_DEBUG."""
+    return [
+        str(minutes)
+        for minutes in SCAN_INTERVAL_OPTIONS
+        if minutes != DEBUG_SCAN_INTERVAL or _debug_scan_interval_enabled()
+    ]
+
+
 def _scan_interval_selector() -> SelectSelector:
     """Update-interval choice with labels from the translation files.
 
@@ -54,7 +71,7 @@ def _scan_interval_selector() -> SelectSelector:
     """
     return SelectSelector(
         SelectSelectorConfig(
-            options=[str(minutes) for minutes in SCAN_INTERVAL_OPTIONS],
+            options=_scan_interval_options(),
             translation_key=CONF_SCAN_INTERVAL,
             mode=SelectSelectorMode.LIST,
         )
@@ -107,7 +124,7 @@ class SsdImsConfigFlow(config_entries.ConfigFlow, domain=DOMAIN):
                     errors["base"] = "invalid_auth"
             except AbortFlow:
                 raise
-            except (ClientError, asyncio.TimeoutError, RuntimeError) as e:
+            except (TimeoutError, ClientError, RuntimeError) as e:
                 _LOGGER.error("Error during authentication: %s", e)
                 errors["base"] = "cannot_connect"
             except Exception:
@@ -152,7 +169,7 @@ class SsdImsConfigFlow(config_entries.ConfigFlow, domain=DOMAIN):
                         },
                     )
                 errors["base"] = "invalid_auth"
-            except (ClientError, asyncio.TimeoutError, RuntimeError) as e:
+            except (TimeoutError, ClientError, RuntimeError) as e:
                 _LOGGER.error("Error during re-authentication: %s", e)
                 errors["base"] = "cannot_connect"
             except Exception:
@@ -190,7 +207,7 @@ class SsdImsConfigFlow(config_entries.ConfigFlow, domain=DOMAIN):
             if not await api_client.authenticate(self._username, self._password):
                 return self.async_abort(reason="reauth_required")
             self._pods = await api_client.get_points_of_delivery()
-        except (ClientError, asyncio.TimeoutError, RuntimeError) as e:
+        except (TimeoutError, ClientError, RuntimeError) as e:
             _LOGGER.error("Error fetching PODs during reconfigure: %s", e)
             return self.async_abort(reason="cannot_connect")
         except Exception:
@@ -406,13 +423,16 @@ class SsdImsOptionsFlow(config_entries.OptionsFlow):
                 CONF_SCAN_INTERVAL: _scan_interval_minutes(
                     user_input.get(CONF_SCAN_INTERVAL, DEFAULT_SCAN_INTERVAL)
                 ),
+                CONF_UNPUBLISHED_AS_UNKNOWN: bool(
+                    user_input.get(CONF_UNPUBLISHED_AS_UNKNOWN, False)
+                ),
             }
             # Update coordinator configuration
             coordinator = self.config_entry.runtime_data
             await coordinator.update_config({**self.config_entry.data, **user_input})
             # Apply new prices/settings now rather than at the next scheduled
             # poll, which can be up to a day away.
-            await coordinator.async_request_refresh()
+            await coordinator.request_immediate_refresh()
             return self.async_create_entry(title="", data=user_input)
 
         price_selector = NumberSelector(
@@ -425,6 +445,18 @@ class SsdImsOptionsFlow(config_entries.OptionsFlow):
             )
         )
         options = self.config_entry.options
+        stored_interval = options.get(
+            CONF_SCAN_INTERVAL,
+            self.config_entry.data.get(CONF_SCAN_INTERVAL, DEFAULT_SCAN_INTERVAL),
+        )
+        # If 5 min is stored but debug is off, show the default in the form.
+        if (
+            stored_interval == DEBUG_SCAN_INTERVAL
+            and not _debug_scan_interval_enabled()
+        ):
+            form_interval = DEFAULT_SCAN_INTERVAL
+        else:
+            form_interval = stored_interval
 
         return self.async_show_form(
             step_id="init",
@@ -432,15 +464,12 @@ class SsdImsOptionsFlow(config_entries.OptionsFlow):
                 {
                     vol.Optional(
                         CONF_SCAN_INTERVAL,
-                        default=str(
-                            options.get(
-                                CONF_SCAN_INTERVAL,
-                                self.config_entry.data.get(
-                                    CONF_SCAN_INTERVAL, DEFAULT_SCAN_INTERVAL
-                                ),
-                            )
-                        ),
+                        default=str(form_interval),
                     ): _scan_interval_selector(),
+                    vol.Optional(
+                        CONF_UNPUBLISHED_AS_UNKNOWN,
+                        default=bool(options.get(CONF_UNPUBLISHED_AS_UNKNOWN, False)),
+                    ): bool,
                     # suggested_value (not default) so the field can be
                     # cleared again to stop importing costs.
                     vol.Optional(

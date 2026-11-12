@@ -15,6 +15,9 @@ CONF_POINT_OF_DELIVERY: Final = (
 CONF_POD_NAME_MAPPING: Final = "pod_name_mapping"
 CONF_ENABLE_HISTORY_IMPORT: Final = "enable_history_import"
 CONF_HISTORY_DAYS: Final = "history_days"
+# When True, Yesterday / yesterday-trend sensors are unknown until the
+# portal has published a complete calendar yesterday (default: show 0).
+CONF_UNPUBLISHED_AS_UNKNOWN: Final = "unpublished_as_unknown"
 # Optional per-kWh prices (incl. VAT) used to compute cost statistics for
 # the monthly tariff register readings.
 CONF_PRICE_VT: Final = "price_vt"
@@ -34,16 +37,22 @@ DEFAULT_POINT_OF_DELIVERY: Final[tuple[str, ...]] = ()
 DEFAULT_ENABLE_HISTORY_IMPORT: Final = True  # Enable by default
 DEFAULT_HISTORY_DAYS: Final = 7  # Import last 7 days of past data by default
 
-# Options - Data is only available up to yesterday and released once per day
-# So polling frequently doesn't make sense
-# Keys are the selectable intervals in minutes; the UI labels come from the
-# "selector.scan_interval" translations, these are only fallbacks.
+# Options — first fetch of the day is 03:05 + jitter; these intervals are the
+# incomplete-yesterday retry cadence (and UI choices). Keys are minutes.
 SCAN_INTERVAL_OPTIONS: Final = {
     5: "5 minutes (debugging only)",
     360: "6 hours (recommended)",
     720: "12 hours",
     1440: "24 hours",
 }
+# 5-minute option is only offered when this env var is set (non-empty).
+DEBUG_ENV: Final = "SSD_IMS_DEBUG"
+DEBUG_SCAN_INTERVAL: Final = 5
+
+# Daily portal fetch: local 03:05 plus up to 30 minutes of per-instance jitter.
+DAILY_POLL_HOUR: Final = 3
+DAILY_POLL_MINUTE: Final = 5
+DAILY_POLL_JITTER: Final = timedelta(minutes=30)
 
 # API delay configuration - random between min and max
 API_DELAY_MIN: Final = 1  # minimum random delay in seconds
@@ -88,8 +97,9 @@ STAT_ACTUAL_CONSUMPTION_COST: Final = "actual_consumption_cost"
 # (and any ad-hoc reading in between) is published.
 COST_RECOMPUTE_PERIODS: Final = 3
 
-# Manual reimport service (domain-level; registered once for all entries)
+# Domain-level services (registered once for all entries)
 SERVICE_REIMPORT_STATISTICS: Final = "reimport_statistics"
+SERVICE_REFRESH: Final = "refresh"
 ATTR_ENTRY_ID: Final = "entry_id"
 ATTR_DATE: Final = "date"
 # Repair issue while a structurally invalid day blocks forward import

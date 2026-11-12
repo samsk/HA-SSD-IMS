@@ -35,6 +35,18 @@ def _make_coordinator(api_client, config):
     coordinator.cloud_link_ok = True
     coordinator.data = None
     coordinator.async_update_listeners = MagicMock()
+    coordinator._poll_jitter = timedelta(minutes=10)
+    coordinator._force_immediate = False
+    coordinator.yesterday_complete = False
+    coordinator.update_interval = timedelta(hours=6)
+    coordinator._reprice_requested = False
+    coordinator._registry_lock = asyncio.Lock()
+    coordinator._last_registry_fetch_date = None
+    coordinator._registry_readings = {}
+    coordinator._supplier_entity_ids = frozenset()
+    coordinator._unsub_supplier = None
+    coordinator._supplier_pod_ids = []
+    coordinator._unsub_supplier_registry = None
     return coordinator
 
 
@@ -280,35 +292,6 @@ class TestStatisticsDayBoundaries:
         assert result is False
         # Only the two published days are flushed, per sensor type.
         assert mock_add_stats.call_count == 4
-
-
-class TestBackgroundBackfillGateOrdering:
-    """Regression test for the first-refresh background backfill task.
-
-    The background task used to set the smart-polling gate
-    (_last_successful_data_date) *before* calling async_request_refresh().
-    Since that refresh re-enters _async_update_data, which returns early
-    (without recomputing cumulative totals) whenever the gate is already
-    set for today, the premature set made the refresh short-circuit and
-    return the stale, pre-backfill data — leaving the Total sensors stuck
-    at 0 until the gate reset the next calendar day, even though the
-    backfill had just successfully populated statistics.
-    """
-
-    async def test_gate_is_not_set_before_requesting_refresh(self):
-        coordinator = _make_coordinator(MagicMock(), {})
-        gate_at_refresh_time = "unset"
-
-        async def fake_request_refresh():
-            nonlocal gate_at_refresh_time
-            gate_at_refresh_time = coordinator._last_successful_data_date
-
-        coordinator._update_statistics = AsyncMock(return_value=True)
-        coordinator.async_request_refresh = AsyncMock(side_effect=fake_request_refresh)
-
-        await coordinator._async_backfill_statistics(["pod_1"])
-
-        assert gate_at_refresh_time is None
 
 
 class TestStatisticIdKeying:
@@ -787,6 +770,42 @@ class TestConsumptionTrends:
             )
         assert pod_data["trends"]["low_demand_kw"] == 1.5
         assert pod_data["trends"]["peak_hour"] == 7
+
+    def test_empty_chart_returns_zeros(self):
+        coordinator = _make_coordinator(MagicMock(), {})
+        assert coordinator._aggregate_data(None) == {
+            "actual_consumption": 0.0,
+            "actual_supply": 0.0,
+        }
+        assert coordinator._aggregate_data(ChartData()) == {
+            "actual_consumption": 0.0,
+            "actual_supply": 0.0,
+        }
+
+    async def test_before_slot_skips_api_and_zeros_yesterday(self):
+        pod = PointOfDelivery(text="99XXX1234560000G (Home)", value="v1")
+        api_client = MagicMock()
+        api_client.get_chart_data = AsyncMock()
+        coordinator = _make_coordinator(api_client, {CONF_POD_NAME_MAPPING: {}})
+        coordinator.pods = {pod.id: pod}
+        coordinator.data = {
+            pod.id: {
+                "aggregated_data": {
+                    "actual_consumption": 12.3,
+                    "actual_supply": 1.0,
+                }
+            }
+        }
+        tz = dt_util.get_time_zone("Europe/Bratislava")
+        with patch(
+            "custom_components.ssd_ims.coordinator.dt_util.now",
+            return_value=datetime(2026, 11, 12, 2, 0, tzinfo=tz),
+        ):
+            result = await coordinator._async_update_data()
+        api_client.get_chart_data.assert_not_called()
+        assert result[pod.id]["aggregated_data"]["actual_consumption"] == 0.0
+        assert result[pod.id]["aggregated_data"]["actual_supply"] == 0.0
+        assert coordinator.update_interval.total_seconds() > 0
 
     async def test_chart_fetch_failure_keeps_previous_yesterday(self):
         pod = PointOfDelivery(text="99XXX1234560000G (Home)", value="v1")

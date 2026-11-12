@@ -10,10 +10,10 @@ from aiohttp import ClientSession
 
 from custom_components.ssd_ims.api_client import SsdImsApiClient
 from custom_components.ssd_ims.const import (
-    REGISTRY_HISTORY_START,
     CONF_POD_NAME_MAPPING,
     CONF_PRICE_NT,
     CONF_PRICE_VT,
+    REGISTRY_HISTORY_START,
 )
 from custom_components.ssd_ims.coordinator import SsdImsDataCoordinator
 from custom_components.ssd_ims.helpers import PriceHistory
@@ -222,7 +222,9 @@ class TestGetRegistryData:
             payloads.append([c["member"] for c in kwargs["json"]["columns"]])
             return _cm(200, base_body)
 
-        with patch.object(api_client._session, "request", side_effect=fake_request_base):
+        with patch.object(
+            api_client._session, "request", side_effect=fake_request_base
+        ):
             await api_client.get_registry_data(
                 POD_ID,
                 datetime(2025, 10, 1, tzinfo=UTC),
@@ -374,6 +376,10 @@ def _make_coordinator(api_client, config, data=None):
     coordinator._force_reimport_day = None
     coordinator.cloud_link_ok = True
     coordinator.data = data
+    coordinator._poll_jitter = timedelta(minutes=10)
+    coordinator._force_immediate = False
+    coordinator.yesterday_complete = False
+    coordinator.update_interval = timedelta(hours=6)
     # No supplier integration installed unless a test says otherwise
     coordinator._supplier_prices = MagicMock(return_value=None)
     return coordinator
@@ -637,23 +643,12 @@ class TestBlendedPrice:
 
 
 class TestHourlyCostStartupGuard:
-    async def test_first_refresh_never_waits_for_the_recorder(self):
-        """Waiting for the recorder during the setup refresh deadlocks Home
-        Assistant's startup (the recorder only commits once startup is done)."""
-        coordinator = _make_coordinator(
-            MagicMock(), {CONF_PRICE_VT: 0.3, CONF_PRICE_NT: 0.1}, data=None
-        )
-        with patch(
-            "custom_components.ssd_ims.coordinator.get_instance"
-        ) as mock_get_instance:
-            await coordinator._update_hourly_costs([POD_ID])
-        mock_get_instance.assert_not_called()
-
     async def test_not_running_yet_never_waits_for_the_recorder(self):
+        """Waiting for the recorder before HA is running deadlocks startup."""
         from homeassistant.core import CoreState
 
         coordinator = _make_coordinator(
-            MagicMock(), {CONF_PRICE_VT: 0.3, CONF_PRICE_NT: 0.1}, data={}
+            MagicMock(), {CONF_PRICE_VT: 0.3, CONF_PRICE_NT: 0.1}, data=None
         )
         coordinator.hass.state = CoreState.starting
         with patch(

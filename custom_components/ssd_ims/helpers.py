@@ -7,8 +7,9 @@ import math
 import re
 from bisect import bisect_right
 from dataclasses import dataclass
-from datetime import UTC, datetime, timedelta, timezone
+from datetime import UTC, datetime, timedelta
 
+from .const import DAILY_POLL_HOUR, DAILY_POLL_MINUTE, DEBUG_SCAN_INTERVAL
 from .models import ChartData, RegistryReading
 
 _LOGGER = logging.getLogger(__name__)
@@ -53,9 +54,61 @@ class DayEnergy:
 def calculate_yesterday_range(now: datetime) -> tuple[datetime, datetime]:
     """Calculate date range for yesterday in the API-expected format."""
     today_midnight = now.replace(hour=0, minute=0, second=0, microsecond=0)
-    period_start = (today_midnight - timedelta(days=1)).astimezone(timezone.utc)
-    period_end = today_midnight.astimezone(timezone.utc)
+    period_start = (today_midnight - timedelta(days=1)).astimezone(UTC)
+    period_end = today_midnight.astimezone(UTC)
     return period_start, period_end
+
+
+@dataclass(frozen=True)
+class PollSchedule:
+    """Next coordinator delay until the following portal poll."""
+
+    delay: timedelta
+
+
+def daily_poll_slot(
+    now: datetime, jitter: timedelta, *, day_offset: int = 0
+) -> datetime:
+    """Local 03:05 + jitter for today (day_offset=0) or a relative day."""
+    day = (now + timedelta(days=day_offset)).replace(
+        hour=DAILY_POLL_HOUR,
+        minute=DAILY_POLL_MINUTE,
+        second=0,
+        microsecond=0,
+    )
+    return day + jitter
+
+
+def next_poll_delay(
+    now: datetime,
+    *,
+    jitter: timedelta,
+    yesterday_complete: bool,
+    scan_interval: timedelta,
+    debug: bool = False,
+    debug_interval: timedelta | None = None,
+) -> PollSchedule:
+    """Delay until the next portal poll.
+
+    First attempt is local 03:05 + jitter. Incomplete yesterday retries on the
+    configured scan_interval with no cap. Once complete, wait for tomorrow's
+    same slot. Debug mode always returns a short fixed interval.
+    """
+    if debug_interval is None:
+        debug_interval = timedelta(minutes=DEBUG_SCAN_INTERVAL)
+
+    if debug:
+        return PollSchedule(delay=debug_interval)
+
+    today_slot = daily_poll_slot(now, jitter)
+    if now < today_slot:
+        return PollSchedule(delay=today_slot - now)
+
+    if yesterday_complete:
+        tomorrow_slot = daily_poll_slot(now, jitter, day_offset=1)
+        return PollSchedule(delay=tomorrow_slot - now)
+
+    return PollSchedule(delay=scan_interval)
 
 
 def sanitize_name(name: str, *, lower: bool = True) -> str:

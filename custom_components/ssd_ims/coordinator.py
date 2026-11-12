@@ -8,10 +8,10 @@ from typing import Any
 
 from homeassistant.components.recorder import get_instance
 from homeassistant.components.recorder.statistics import (
+    StatisticMeanType,
     async_add_external_statistics,
     get_last_statistics,
     statistics_during_period,
-    StatisticMeanType,
 )
 from homeassistant.config_entries import ConfigEntry
 from homeassistant.const import Platform
@@ -37,6 +37,8 @@ from .const import (
     CONF_SCAN_INTERVAL,
     COST_RECOMPUTE_PERIODS,
     CURRENCY,
+    DAILY_POLL_JITTER,
+    DEBUG_SCAN_INTERVAL,
     DEFAULT_HISTORY_DAYS,
     DEFAULT_SCAN_INTERVAL,
     DOMAIN,
@@ -59,6 +61,8 @@ from .helpers import (
     aggregate_chart_day,
     calculate_yesterday_range,
     chart_day_trends,
+    daily_poll_slot,
+    next_poll_delay,
     sanitize_name,
     validate_chart_structure,
     validate_registry_readings,
@@ -117,15 +121,22 @@ class SsdImsDataCoordinator(DataUpdateCoordinator):
         self._force_reimport_day: date | None = None
         # Portal accepted the last login (connectivity binary sensor / event).
         self.cloud_link_ok = True
+        # Once per coordinator lifetime: stagger the daily 03:05 slot.
+        jitter_seconds = random.randint(0, int(DAILY_POLL_JITTER.total_seconds()))
+        self._poll_jitter = timedelta(seconds=jitter_seconds)
+        # Manual refresh (options / reimport) must not wait for 03:05.
+        self._force_immediate = False
+        # True after a complete calendar-yesterday import this session.
+        self.yesterday_complete = False
 
-        scan_interval = timedelta(
-            minutes=config.get(CONF_SCAN_INTERVAL, DEFAULT_SCAN_INTERVAL)
-        )
+        # Placeholder until the first refresh sets the real delay to the slot.
         super().__init__(
             hass,
             _LOGGER,
             name=DOMAIN,
-            update_interval=scan_interval,
+            update_interval=timedelta(
+                minutes=config.get(CONF_SCAN_INTERVAL, DEFAULT_SCAN_INTERVAL)
+            ),
             config_entry=entry,
         )
 
@@ -145,36 +156,63 @@ class SsdImsDataCoordinator(DataUpdateCoordinator):
         if not ok:
             self.entry.async_start_reauth(self.hass)
 
+    def _is_debug_poll(self) -> bool:
+        """True when the 5-minute debug interval is selected."""
+        return (
+            self.config.get(CONF_SCAN_INTERVAL, DEFAULT_SCAN_INTERVAL)
+            == DEBUG_SCAN_INTERVAL
+        )
+
+    def _apply_poll_schedule(self, *, yesterday_complete: bool) -> None:
+        """Set update_interval from the daily slot / configured retry cadence."""
+        now = dt_util.now()
+        scan_minutes = self.config.get(CONF_SCAN_INTERVAL, DEFAULT_SCAN_INTERVAL)
+        schedule = next_poll_delay(
+            now,
+            jitter=self._poll_jitter,
+            yesterday_complete=yesterday_complete,
+            scan_interval=timedelta(minutes=scan_minutes),
+            debug=self._is_debug_poll(),
+        )
+        self.update_interval = schedule.delay
+        self.yesterday_complete = yesterday_complete
+        _LOGGER.debug(
+            "Next poll in %g minutes (yesterday_complete=%s)",
+            schedule.delay.total_seconds() / 60,
+            yesterday_complete,
+        )
+
+    async def request_immediate_refresh(self) -> None:
+        """Refresh now, bypassing the before-slot API skip.
+
+        Awaits a full ``async_refresh`` (not the debounced request) so callers
+        such as options/reconfigure and tests know when the update finished.
+        """
+        self._force_immediate = True
+        await self.async_refresh()
+
     async def update_config(self, new_config: dict[str, Any]) -> None:
         """Update coordinator configuration."""
         self.config = new_config
-        new_interval = timedelta(
-            minutes=new_config.get(CONF_SCAN_INTERVAL, DEFAULT_SCAN_INTERVAL)
-        )
-        if self.update_interval != new_interval:
-            self.update_interval = new_interval
-            _LOGGER.info(
-                "Update interval changed to %g minutes",
-                new_interval.total_seconds() / 60,
-            )
-        # Reset smart-polling gate so the next scheduled poll performs a full
-        # update — ensures newly added/removed PODs are picked up immediately
-        # even when the config changes on the same calendar day.
+        # Reset smart-polling gate so the next poll performs a full update —
+        # newly added/removed PODs and price changes take effect immediately.
         self._last_successful_data_date = None
-        # Prices may have changed — re-run the register import on next poll.
         self._last_registry_fetch_date = None
+        self._force_immediate = True
 
     async def _async_update_data(self) -> dict[str, Any]:
         """Fetch data from API and update statistics."""
+        force_immediate = self._force_immediate
+        self._force_immediate = False
         try:
             if not self.cloud_link_ok:
                 _LOGGER.debug("Cloud link down — skipping API calls until reauth")
                 return self.data or {}
 
-            today = dt_util.now().date()
+            now = dt_util.now()
+            today = now.date()
 
-            # Smart polling: the portal publishes data once per day after midnight.
-            # Once we have confirmed that all statistics are current, skip further
+            # Smart polling: once yesterday is confirmed complete, skip further
             # API calls until the next calendar day.
             if self._last_successful_data_date == today and self.data:
                 if self._reprice_requested:
@@ -183,7 +221,27 @@ class SsdImsDataCoordinator(DataUpdateCoordinator):
                 _LOGGER.debug(
                     "Data already up to date for %s — skipping API calls", today
                 )
+                self._apply_poll_schedule(yesterday_complete=True)
                 return self.data
+
+            # Before the daily slot, do not hit the portal (manual refresh and
+            # debug 5-minute mode excepted). Calendar yesterday is not published
+            # yet — Yesterday sensors show 0 (or unknown if that option is on).
+            today_slot = daily_poll_slot(now, self._poll_jitter)
+            if not force_immediate and not self._is_debug_poll() and now < today_slot:
+                _LOGGER.debug(
+                    "Before daily slot %s — skipping API calls", today_slot.isoformat()
+                )
+                self._apply_poll_schedule(yesterday_complete=False)
+                if self.data:
+                    data = {pod_id: dict(pod) for pod_id, pod in self.data.items()}
+                else:
+                    pod_ids = self.config.get(CONF_POINT_OF_DELIVERY) or []
+                    data = {pod_id: {} for pod_id in pod_ids}
+                zeros = dict.fromkeys(ENABLED_SENSOR_TYPES, 0.0)
+                for pod_data in data.values():
+                    pod_data["aggregated_data"] = zeros
+                return data
 
             _LOGGER.info("Starting data update for SSD IMS integration")
 
@@ -193,23 +251,12 @@ class SsdImsDataCoordinator(DataUpdateCoordinator):
             pod_ids = self.config.get(CONF_POINT_OF_DELIVERY) or list(self.pods.keys())
             if not pod_ids:
                 _LOGGER.warning("No PODs configured or discovered. Skipping update.")
+                self._apply_poll_schedule(yesterday_complete=False)
                 return {}
 
-            if self.data is None:
-                # First refresh (runs synchronously during config entry setup,
-                # bounded by Home Assistant's bootstrap timeout): don't block
-                # setup on a potentially large statistics backfill. Run it as
-                # a background task instead and let it — plus subsequent
-                # scheduled polls, which HA already runs in the background —
-                # catch up incrementally.
-                stats_complete = False
-                self.entry.async_create_background_task(
-                    self.hass,
-                    self._async_backfill_statistics(pod_ids),
-                    f"{DOMAIN}_initial_statistics_backfill",
-                )
-            else:
-                stats_complete = await self._update_statistics(pod_ids)
+            # First refresh already runs in a background task after setup, so
+            # it is safe to walk statistics inline (no bootstrap timeout).
+            stats_complete = await self._update_statistics(pod_ids)
 
             all_pod_data: dict[str, Any] = {pod_id: {} for pod_id in pod_ids}
             await self._fetch_cumulative_totals_from_statistics(all_pod_data)
@@ -246,7 +293,7 @@ class SsdImsDataCoordinator(DataUpdateCoordinator):
                 if aggregated is not None:
                     pod_data["aggregated_data"] = aggregated
                     self._merge_chart_trends(pod_data, chart_data, aggregated)
-                pod_data["last_update"] = now.isoformat()
+                    pod_data["last_update"] = now.isoformat()
 
             self._reprice_requested = False
             await self._update_registry(pod_ids, all_pod_data, today)
@@ -261,6 +308,7 @@ class SsdImsDataCoordinator(DataUpdateCoordinator):
                     today,
                 )
 
+            self._apply_poll_schedule(yesterday_complete=stats_complete)
             _LOGGER.info("Data update for all sensors completed.")
             return all_pod_data
 
@@ -271,30 +319,6 @@ class SsdImsDataCoordinator(DataUpdateCoordinator):
         except Exception as e:
             _LOGGER.error("Error updating data: %s", e)
             raise UpdateFailed(f"Error updating data: {e}") from e
-
-    async def _async_backfill_statistics(self, pod_ids: list[str]) -> None:
-        """Run the statistics backfill outside the config entry setup path.
-
-        Started as a background task from the first refresh so a large
-        catch-up range can't block Home Assistant's bootstrap timeout.
-        """
-        try:
-            await self._update_statistics(pod_ids)
-        except SsdImsAuthenticationError as err:
-            _LOGGER.error("Cloud link lost during backfill: %s", err)
-            self.set_cloud_link_ok(False)
-            return
-        except Exception:
-            _LOGGER.exception("Error during background statistics backfill")
-            return
-
-        # Pull the newly imported totals into coordinator.data and notify
-        # entities instead of waiting for the next scheduled poll. This
-        # re-runs _async_update_data, which sets the smart-polling gate
-        # itself once it confirms completeness — setting it here first
-        # would make that refresh short-circuit on the gate and return the
-        # stale pre-backfill data instead of picking up the new totals.
-        await self.async_request_refresh()
 
     def _get_random_api_delay(self) -> float:
         """Get random API delay."""
@@ -317,8 +341,8 @@ class SsdImsDataCoordinator(DataUpdateCoordinator):
 
     async def _update_statistics(self, pod_ids: list[str]) -> bool:
         """Import statistics for all configured PODs, serialized against
-        concurrent callers (the background backfill task and a regular
-        scheduled poll can otherwise overlap on the same statistics).
+        concurrent callers (manual reimport and a scheduled poll can
+        otherwise overlap on the same statistics).
         """
         async with self._stats_lock:
             return await self._update_statistics_locked(pod_ids)
@@ -373,6 +397,7 @@ class SsdImsDataCoordinator(DataUpdateCoordinator):
                 day = today - timedelta(days=1)
         self._force_reimport_day = day
         self._last_successful_data_date = None
+        self._force_immediate = True
         await self.async_request_refresh()
 
     async def _async_sum_before(self, statistic_id: str, before: datetime) -> float:
@@ -1228,11 +1253,13 @@ class SsdImsDataCoordinator(DataUpdateCoordinator):
         provisionally before their period's closing reading was published.
         Existing rows are overwritten in place by the recorder.
         """
-        # Waiting for the recorder below deadlocks while Home Assistant is
-        # still starting (the recorder doesn't commit until startup is done,
-        # and startup waits for this integration's first refresh). Costs are
-        # computed on the refresh the background backfill requests instead.
-        if self.data is None or self.hass.state is not CoreState.running:
+        # Waiting for the recorder deadlocks while HA is still starting (the
+        # recorder commits only after startup finishes). Startup refresh is a
+        # background task after platforms load; skip costs until HA is running.
+        # Do not gate on ``self.data is None``: on the first refresh data is
+        # always None until this method returns, and the daily smart-poll gate
+        # would then skip later same-day refreshes — costs would never import.
+        if self.hass.state is not CoreState.running:
             return
         if not any(self._pod_prices(pod_id)[0] is not None for pod_id in pod_ids):
             return
@@ -1396,11 +1423,13 @@ class SsdImsDataCoordinator(DataUpdateCoordinator):
         Uses the same start-in-day filter and kW→kWh conversion as the
         statistics import, so the Yesterday sensors match that day's
         statistic deltas (including excluding the previous day's final
-        boundary quarter). Returns None when the payload is structurally
-        invalid so the caller can keep the last good value.
+        boundary quarter). Empty or incomplete unpublished yesterday becomes
+        0.0 (not last-good). Structurally invalid payloads return None so the
+        caller keeps the previous value.
         """
+        zeros = dict.fromkeys(ENABLED_SENSOR_TYPES, 0.0)
         if chart_data is None or not chart_data.metering_datetime:
-            return dict.fromkeys(ENABLED_SENSOR_TYPES, 0.0)
+            return zeros
 
         now = dt_util.now()
         day_start = now.replace(hour=0, minute=0, second=0, microsecond=0) - timedelta(
@@ -1416,15 +1445,18 @@ class SsdImsDataCoordinator(DataUpdateCoordinator):
             )
             return None
 
-        return {
-            sensor_type: aggregate_chart_day(
+        totals: dict[str, float] = {}
+        for sensor_type in ENABLED_SENSOR_TYPES:
+            day = aggregate_chart_day(
                 chart_data,
                 self._sensor_values(chart_data, sensor_type),
                 day_start,
                 day_end,
-            ).total_kwh
-            for sensor_type in ENABLED_SENSOR_TYPES
-        }
+            )
+            if day.quarter_count == 0 or not day.complete:
+                return zeros
+            totals[sensor_type] = day.total_kwh
+        return totals
 
     def _merge_chart_trends(
         self,

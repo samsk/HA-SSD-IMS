@@ -10,10 +10,13 @@ from homeassistant.core import HomeAssistant
 from homeassistant.data_entry_flow import FlowResultType
 from pytest_homeassistant.common import MockConfigEntry
 
+from custom_components.ssd_ims.config_flow import _scan_interval_options
 from custom_components.ssd_ims.const import (
     CONF_HISTORY_DAYS,
     CONF_POD_NAME_MAPPING,
     CONF_POINT_OF_DELIVERY,
+    CONF_UNPUBLISHED_AS_UNKNOWN,
+    DEBUG_ENV,
     DOMAIN,
 )
 from custom_components.ssd_ims.models import PointOfDelivery
@@ -314,7 +317,7 @@ async def test_options_flow_updates_scan_interval(hass: HomeAssistant):
 
     coordinator = MagicMock()
     coordinator.update_config = AsyncMock()
-    coordinator.async_request_refresh = AsyncMock()
+    coordinator.request_immediate_refresh = AsyncMock()
     entry.runtime_data = coordinator
 
     result = await hass.config_entries.options.async_init(entry.entry_id)
@@ -348,7 +351,7 @@ async def test_options_flow_saves_tariff_prices(hass: HomeAssistant):
 
     coordinator = MagicMock()
     coordinator.update_config = AsyncMock()
-    coordinator.async_request_refresh = AsyncMock()
+    coordinator.request_immediate_refresh = AsyncMock()
     entry.runtime_data = coordinator
 
     result = await hass.config_entries.options.async_init(entry.entry_id)
@@ -366,7 +369,7 @@ async def test_options_flow_saves_tariff_prices(hass: HomeAssistant):
     assert pushed["price_vt"] == 0.2502
     assert pushed["price_nt"] == 0.1376
     # Costs are computed right away, not at the next scheduled poll.
-    coordinator.async_request_refresh.assert_awaited_once()
+    coordinator.request_immediate_refresh.assert_awaited_once()
 
 
 async def test_options_flow_prices_are_optional(hass: HomeAssistant):
@@ -384,7 +387,7 @@ async def test_options_flow_prices_are_optional(hass: HomeAssistant):
     entry.add_to_hass(hass)
     coordinator = MagicMock()
     coordinator.update_config = AsyncMock()
-    coordinator.async_request_refresh = AsyncMock()
+    coordinator.request_immediate_refresh = AsyncMock()
     entry.runtime_data = coordinator
 
     result = await hass.config_entries.options.async_init(entry.entry_id)
@@ -436,3 +439,45 @@ async def test_import_paused_repair_reads_entry_id_and_reimports(
     result = await flow.async_step_confirm(user_input={})
     assert result["type"] is FlowResultType.CREATE_ENTRY
     coordinator.async_reimport.assert_awaited_once_with()
+
+
+def test_scan_interval_hides_five_minutes_without_debug(monkeypatch):
+    monkeypatch.delenv(DEBUG_ENV, raising=False)
+    assert "5" not in _scan_interval_options()
+    assert "360" in _scan_interval_options()
+
+
+def test_scan_interval_shows_five_minutes_with_debug(monkeypatch):
+    monkeypatch.setenv(DEBUG_ENV, "1")
+    assert "5" in _scan_interval_options()
+
+
+async def test_options_flow_saves_unpublished_as_unknown(hass: HomeAssistant):
+    entry = MockConfigEntry(
+        domain=DOMAIN,
+        unique_id="test_user",
+        data={
+            "username": "test_user",
+            "password": "test_pass",
+            CONF_POINT_OF_DELIVERY: [POD_ID],
+            CONF_POD_NAME_MAPPING: {},
+        },
+    )
+    entry.add_to_hass(hass)
+    coordinator = MagicMock()
+    coordinator.update_config = AsyncMock()
+    coordinator.request_immediate_refresh = AsyncMock()
+    entry.runtime_data = coordinator
+
+    result = await hass.config_entries.options.async_init(entry.entry_id)
+    assert CONF_UNPUBLISHED_AS_UNKNOWN in result["data_schema"].schema
+
+    result = await hass.config_entries.options.async_configure(
+        result["flow_id"],
+        {"scan_interval": "360", CONF_UNPUBLISHED_AS_UNKNOWN: True},
+    )
+    assert result["type"] is FlowResultType.CREATE_ENTRY
+    assert entry.options[CONF_UNPUBLISHED_AS_UNKNOWN] is True
+    assert (
+        coordinator.update_config.call_args.args[0][CONF_UNPUBLISHED_AS_UNKNOWN] is True
+    )

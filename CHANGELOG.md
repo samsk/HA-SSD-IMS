@@ -1,5 +1,14 @@
 # Changelog
 
+## Version 3.0.0b5
+
+- **New feature**: Daily portal fetch after local **03:05** plus up to 30 minutes of per-instance jitter; incomplete yesterday retries on the configured scan interval (6/12/24 h) until complete, then tomorrow's same slot
+- **New feature**: Service **`ssd_ims.refresh`** forces an immediate portal fetch (bypasses the before-slot wait; does not rewrite closed statistics days)
+- **New feature**: Options toggle **unpublished as unknown** (off by default) so Yesterday / yesterday-trend sensors can show unknown until published; default remains **0** after midnight
+- **Internal**: Setup no longer blocks on a portal download; a background refresh runs after platforms load. The 5-minute scan interval is hidden unless `SSD_IMS_DEBUG` is set
+- **New feature**: Register **Base Demand** (`actualConsumptionMin`, off by default); Peak/Base Demand display as SK Najvyšší/Najnižší odber; demand sensors expose **W** (portal kW × 1000)
+- **Bug fix**: 7-day and 30-day average sensors round to 3 decimal places
+
 ## Version 3.0.0b4
 
 - **New feature**: **Low Demand** register sensor when the portal returns `actualConsumptionMin` (falls back cleanly if the column is unsupported)

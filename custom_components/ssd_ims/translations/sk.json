@@ -38,7 +38,7 @@
           "history_days": "Počet dní na import"
         },
         "data_description": {
-          "scan_interval": "Ako často kontrolovať nové údaje o energii. Keďže údaje sú zvyčajne dostupné raz denne, časté aktualizácie nie sú potrebné."
+          "scan_interval": "Prvé sťahovanie dňa je po 3:05 miestneho času (±30 min). Kým nie je včerajšok úplný, používa sa tento interval na opakované pokusy."
         }
       }
     },
@@ -72,6 +72,16 @@
     }
   },
   "services": {
+    "refresh": {
+      "name": "Obnoviť",
+      "description": "Hneď načíta údaje z portálu, bez čakania na denné okno po 3:05. Neprepíše uzavreté štatistiky — na to použite Znova importovať štatistiky.",
+      "fields": {
+        "entry_id": {
+          "name": "Konfiguračný záznam",
+          "description": "Ktorý záznam SSD IMS obnoviť. Nechajte prázdne pre všetky načítané záznamy."
+        }
+      }
+    },
     "reimport_statistics": {
       "name": "Znova importovať štatistiky",
       "description": "Znova načíta údaje z portálu od zvoleného lokálneho dňa až po včerajšok a prepíše hodinové štatistiky, aby bežiaci súčet zostal spojitý. Predvolene pozastavený deň, inak včerajšok. Plánované obnovenie uzavreté dni neprepíše.",
@@ -94,10 +104,13 @@
         "description": "Ak chcete v paneli Energia vidieť aj náklady, zadajte ceny elektriny za kWh. Použite koncové ceny s DPH z faktúry od dodávateľa – pri SSE ich nájdete pod nadpisom „Aktuálne koncové ceny elektriny platné pre Vašu sadzbu“. Pri jednotarifnej sadzbe (D1, D2) stačí vyplniť cenu za VT. Ak ceny nevyplníte, náklady sa počítať nebudú. Ak máte nainštalovanú integráciu SSE eZóna (sse_ezona), ceny sa pre odberné miesta s rovnakým EIC kódom berú z nej a tieto polia sa pre ne nepoužijú.",
         "data": {
           "scan_interval": "Interval aktualizácie",
+          "unpublished_as_unknown": "Včerajšok ako neznámy, kým portál nezverejní údaje",
           "price_vt": "Cena vo vysokej tarife (VT)",
           "price_nt": "Cena v nízkej tarife (NT)"
         },
         "data_description": {
+          "scan_interval": "Prvé sťahovanie dňa je po 3:05 miestneho času (±30 min). Kým nie je včerajšok úplný, používa sa tento interval na opakované pokusy.",
+          "unpublished_as_unknown": "Ak je zapnuté, senzory včerajška a včerajších trendov sú neznáme, kým portál nemá celý predchádzajúci deň. Ak je vypnuté (predvolene), po polnoci ukazujú 0, kým portál údaje nezverejní.",
           "price_vt": "Koncová cena za 1 kWh v eurách vrátane DPH a všetkých poplatkov.",
           "price_nt": "Koncová cena za 1 kWh v eurách vrátane DPH a všetkých poplatkov. Pri jednotarifnej sadzbe pole nechajte prázdne – celá spotreba sa vypočíta s cenou za VT."
         }
@@ -111,8 +124,14 @@
       }
     },
     "sensor": {
-      "low_demand_yesterday": {
-        "name": "Nízky výkon včera"
+      "peak_demand": {
+        "name": "Najvyšší odber"
+      },
+      "base_demand": {
+        "name": "Najnižší odber"
+      },
+      "base_demand_yesterday": {
+        "name": "Najnižší odber včera"
       },
       "load_factor_yesterday": {
         "name": "Zaťaženie včera"

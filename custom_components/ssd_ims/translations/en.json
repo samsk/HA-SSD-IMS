@@ -38,7 +38,7 @@
           "history_days": "Number of days to import"
         },
         "data_description": {
-          "scan_interval": "How often to check for new energy data. Since data is typically available once per day, frequent updates are not necessary."
+          "scan_interval": "First fetch of the day is after 03:05 local (±30 min). Until yesterday is complete, this interval is used for retries."
         }
       }
     },
@@ -72,6 +72,16 @@
     }
   },
   "services": {
+    "refresh": {
+      "name": "Refresh",
+      "description": "Fetch portal data now, without waiting for the daily 03:05 slot. Does not rewrite closed statistics days — use Reimport statistics for that.",
+      "fields": {
+        "entry_id": {
+          "name": "Config entry",
+          "description": "Which SSD IMS entry to refresh. Leave empty to refresh all loaded entries."
+        }
+      }
+    },
     "reimport_statistics": {
       "name": "Reimport statistics",
       "description": "Re-fetch portal data from the chosen local day through yesterday and rewrite hourly statistics so running totals stay continuous. Defaults to the paused day, or yesterday. Scheduled polls do not rewrite closed days.",
@@ -94,10 +104,13 @@
         "description": "Update integration settings. Optional VT/NT prices are final prices in EUR per kWh incl. VAT, as printed on your supplier invoice (SSE: \"Aktuálne koncové ceny elektriny platné pre Vašu sadzbu\"). They are used to import hourly costs for the actual consumption statistic and monthly costs for the tariff register readings. For a single-rate tariff (D1/D2) fill in VT only; leave both empty to skip costs. If the SSE eZóna integration (sse_ezona) is installed, its prices are used instead for points with the same EIC code.",
         "data": {
           "scan_interval": "Update interval",
+          "unpublished_as_unknown": "Show yesterday as unknown until published",
           "price_vt": "High tariff (VT) price",
           "price_nt": "Low tariff (NT) price"
         },
         "data_description": {
+          "scan_interval": "First fetch of the day is after 03:05 local (±30 min). Until yesterday is complete, this interval is used for retries.",
+          "unpublished_as_unknown": "When enabled, Yesterday and yesterday trend sensors are unknown until the portal has a complete previous day. When disabled (default), they show 0 after midnight until published.",
           "price_vt": "Final price in EUR per kWh including VAT and all per-kWh fees, e.g. from your supplier invoice.",
           "price_nt": "Final price in EUR per kWh including VAT and all per-kWh fees, e.g. from your supplier invoice. Leave empty for single-rate tariffs (D1/D2) — the VT price is then used for all consumption."
         }
@@ -111,8 +124,14 @@
       }
     },
     "sensor": {
-      "low_demand_yesterday": {
-        "name": "Low demand yesterday"
+      "peak_demand": {
+        "name": "Peak Demand"
+      },
+      "base_demand": {
+        "name": "Base Demand"
+      },
+      "base_demand_yesterday": {
+        "name": "Base demand yesterday"
       },
       "load_factor_yesterday": {
         "name": "Load factor yesterday"

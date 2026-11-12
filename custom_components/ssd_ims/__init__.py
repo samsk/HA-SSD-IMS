@@ -6,11 +6,12 @@ from datetime import date
 
 import voluptuous as vol
 from aiohttp import ClientError
-
 from homeassistant.config_entries import ConfigEntry
 from homeassistant.const import CONF_PASSWORD, CONF_USERNAME
 from homeassistant.core import (
     DOMAIN as HOMEASSISTANT_DOMAIN,
+)
+from homeassistant.core import (
     HomeAssistant,
     ServiceCall,
 )
@@ -32,12 +33,14 @@ from .const import (
     CONF_PRICE_NT,
     CONF_PRICE_VT,
     CONF_SCAN_INTERVAL,
+    CONF_UNPUBLISHED_AS_UNKNOWN,
     DEFAULT_HISTORY_DAYS,
     DEFAULT_POINT_OF_DELIVERY,
     DEFAULT_SCAN_INTERVAL,
     DOMAIN,
     EVENT_CLOUD_LINK,
     ISSUE_IMPORT_PAUSED,
+    SERVICE_REFRESH,
     SERVICE_REIMPORT_STATISTICS,
 )
 from .coordinator import SsdImsDataCoordinator
@@ -53,6 +56,11 @@ SERVICE_REIMPORT_SCHEMA = vol.Schema(
     {
         vol.Optional(ATTR_ENTRY_ID): cv.string,
         vol.Optional(ATTR_DATE): cv.date,
+    }
+)
+SERVICE_REFRESH_SCHEMA = vol.Schema(
+    {
+        vol.Optional(ATTR_ENTRY_ID): cv.string,
     }
 )
 
@@ -123,10 +131,12 @@ async def async_setup_entry(hass: HomeAssistant, entry: SsdImsConfigEntry) -> bo
         CONF_POD_NAME_MAPPING: entry.data.get(CONF_POD_NAME_MAPPING, {}),
         CONF_HISTORY_DAYS: entry.data.get(CONF_HISTORY_DAYS, DEFAULT_HISTORY_DAYS),
     }
-    # Optional tariff prices only ever live in entry.options
+    # Optional tariff prices and flags only ever live in entry.options
     for price_key in (CONF_PRICE_VT, CONF_PRICE_NT):
         if (price := entry.options.get(price_key)) is not None:
             config[price_key] = price
+    if entry.options.get(CONF_UNPUBLISHED_AS_UNKNOWN):
+        config[CONF_UNPUBLISHED_AS_UNKNOWN] = True
 
     coordinator = SsdImsDataCoordinator(hass, api_client, config, entry)
     entry.runtime_data = coordinator
@@ -139,55 +149,81 @@ async def async_setup_entry(hass: HomeAssistant, entry: SsdImsConfigEntry) -> bo
                 EVENT_CLOUD_LINK, {"entry_id": entry.entry_id, "ok": True}
             )
         _async_clear_reauth_issue(hass, entry.entry_id)
-        # First refresh populates coordinator.data before platforms register.
-        await coordinator.async_config_entry_first_refresh()
     else:
         # Keep the entry loaded so the cloud-link sensor stays available.
-        # Skip the first refresh — no portal calls with a rejected password.
+        # No portal download with a rejected password.
         coordinator.set_cloud_link_ok(False)
 
     await hass.config_entries.async_forward_entry_setups(entry, PLATFORMS)
     _async_register_services(hass)
 
+    # Re-fetch after platforms load — not during setup — so HA start is not
+    # blocked on portal chart/registry calls. Before today's 03:05 slot the
+    # coordinator skips the API and waits for the daily window. Background
+    # tasks are not awaited by ``async_block_till_done``; that is intentional
+    # so startup is not held open. Manual/options paths use
+    # ``request_immediate_refresh`` which awaits completion.
+    if authenticated:
+        entry.async_create_background_task(
+            hass,
+            coordinator.request_immediate_refresh(),
+            f"{DOMAIN}_startup_refresh",
+        )
+
     return True
+
+
+def _loaded_coordinators(
+    hass: HomeAssistant, entry_id: str | None
+) -> list[SsdImsDataCoordinator]:
+    """Resolve loaded coordinators for a service call (one entry or all)."""
+    entries = hass.config_entries.async_entries(DOMAIN)
+    if entry_id:
+        entry = next((e for e in entries if e.entry_id == entry_id), None)
+        if entry is None or not isinstance(
+            getattr(entry, "runtime_data", None), SsdImsDataCoordinator
+        ):
+            raise HomeAssistantError(f"Unknown SSD IMS entry: {entry_id}")
+        return [entry.runtime_data]
+
+    coordinators = [
+        e.runtime_data
+        for e in entries
+        if isinstance(getattr(e, "runtime_data", None), SsdImsDataCoordinator)
+    ]
+    if not coordinators:
+        raise HomeAssistantError("No loaded SSD IMS entries")
+    return coordinators
 
 
 def _async_register_services(hass: HomeAssistant) -> None:
     """Register domain services once for all config entries."""
-    if hass.services.has_service(DOMAIN, SERVICE_REIMPORT_STATISTICS):
-        return
 
     async def _handle_reimport(call: ServiceCall) -> None:
         """Re-fetch and rewrite one local day of statistics."""
-        entry_id: str | None = call.data.get(ATTR_ENTRY_ID)
         day: date | None = call.data.get(ATTR_DATE)
-        entries = hass.config_entries.async_entries(DOMAIN)
-        if entry_id:
-            entry = next((e for e in entries if e.entry_id == entry_id), None)
-            if entry is None or not isinstance(
-                getattr(entry, "runtime_data", None), SsdImsDataCoordinator
-            ):
-                raise HomeAssistantError(f"Unknown SSD IMS entry: {entry_id}")
-            targets = [entry]
-        else:
-            targets = [
-                e
-                for e in entries
-                if isinstance(getattr(e, "runtime_data", None), SsdImsDataCoordinator)
-            ]
-            if not targets:
-                raise HomeAssistantError("No loaded SSD IMS entries to reimport")
-
-        for target in targets:
-            coordinator: SsdImsDataCoordinator = target.runtime_data
+        for coordinator in _loaded_coordinators(hass, call.data.get(ATTR_ENTRY_ID)):
             await coordinator.async_reimport(day)
 
-    hass.services.async_register(
-        DOMAIN,
-        SERVICE_REIMPORT_STATISTICS,
-        _handle_reimport,
-        schema=SERVICE_REIMPORT_SCHEMA,
-    )
+    async def _handle_refresh(call: ServiceCall) -> None:
+        """Force an immediate portal refresh (bypasses the before-slot wait)."""
+        for coordinator in _loaded_coordinators(hass, call.data.get(ATTR_ENTRY_ID)):
+            await coordinator.request_immediate_refresh()
+
+    if not hass.services.has_service(DOMAIN, SERVICE_REIMPORT_STATISTICS):
+        hass.services.async_register(
+            DOMAIN,
+            SERVICE_REIMPORT_STATISTICS,
+            _handle_reimport,
+            schema=SERVICE_REIMPORT_SCHEMA,
+        )
+    if not hass.services.has_service(DOMAIN, SERVICE_REFRESH):
+        hass.services.async_register(
+            DOMAIN,
+            SERVICE_REFRESH,
+            _handle_refresh,
+            schema=SERVICE_REFRESH_SCHEMA,
+        )
 
 
 async def async_unload_entry(hass: HomeAssistant, entry: SsdImsConfigEntry) -> bool:
@@ -202,8 +238,9 @@ async def async_unload_entry(hass: HomeAssistant, entry: SsdImsConfigEntry) -> b
             for e in hass.config_entries.async_entries(DOMAIN)
             if e.entry_id != entry.entry_id
         ):
-            if hass.services.has_service(DOMAIN, SERVICE_REIMPORT_STATISTICS):
-                hass.services.async_remove(DOMAIN, SERVICE_REIMPORT_STATISTICS)
+            for service in (SERVICE_REIMPORT_STATISTICS, SERVICE_REFRESH):
+                if hass.services.has_service(DOMAIN, service):
+                    hass.services.async_remove(DOMAIN, service)
 
     return unload_ok
 

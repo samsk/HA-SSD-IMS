@@ -1,6 +1,6 @@
 """Tests for pure helper functions: date-range math, name sanitization, chart validation."""
 
-from datetime import UTC, datetime, timedelta, timezone
+from datetime import UTC, datetime, timedelta
 from zoneinfo import ZoneInfo
 
 import pytest
@@ -11,7 +11,9 @@ from custom_components.ssd_ims.helpers import (
     aggregate_chart_day,
     calculate_yesterday_range,
     chart_day_trends,
+    daily_poll_slot,
     expected_quarters,
+    next_poll_delay,
     sanitize_name,
     validate_chart_structure,
     validate_registry_page,
@@ -26,14 +28,14 @@ class TestCalculateYesterdayRange:
     start of the range."""
 
     def test_utc_input_returns_utc_aware_bounds_one_day_apart(self):
-        now = datetime(2026, 6, 15, 14, 30, tzinfo=timezone.utc)
+        now = datetime(2026, 6, 15, 14, 30, tzinfo=UTC)
 
         start, end = calculate_yesterday_range(now)
 
-        assert start.tzinfo == timezone.utc
-        assert end.tzinfo == timezone.utc
-        assert start == datetime(2026, 6, 14, 0, 0, tzinfo=timezone.utc)
-        assert end == datetime(2026, 6, 15, 0, 0, tzinfo=timezone.utc)
+        assert start.tzinfo == UTC
+        assert end.tzinfo == UTC
+        assert start == datetime(2026, 6, 14, 0, 0, tzinfo=UTC)
+        assert end == datetime(2026, 6, 15, 0, 0, tzinfo=UTC)
         assert end - start == timedelta(days=1)
 
     def test_start_is_tz_aware_not_naive(self):
@@ -51,8 +53,8 @@ class TestCalculateYesterdayRange:
 
         start, end = calculate_yesterday_range(now)
 
-        assert start == datetime(2026, 1, 13, 23, 0, tzinfo=timezone.utc)
-        assert end == datetime(2026, 1, 14, 23, 0, tzinfo=timezone.utc)
+        assert start == datetime(2026, 1, 13, 23, 0, tzinfo=UTC)
+        assert end == datetime(2026, 1, 14, 23, 0, tzinfo=UTC)
 
     def test_local_midnight_boundaries_convert_correctly_in_summer_dst(self):
         """Local midnight in summer (CEST, UTC+2) must convert to 22:00 UTC
@@ -61,8 +63,8 @@ class TestCalculateYesterdayRange:
 
         start, end = calculate_yesterday_range(now)
 
-        assert start == datetime(2026, 7, 13, 22, 0, tzinfo=timezone.utc)
-        assert end == datetime(2026, 7, 14, 22, 0, tzinfo=timezone.utc)
+        assert start == datetime(2026, 7, 13, 22, 0, tzinfo=UTC)
+        assert end == datetime(2026, 7, 14, 22, 0, tzinfo=UTC)
 
 
 class TestSanitizeName:
@@ -245,3 +247,103 @@ class TestValidateRegistry:
         with pytest.raises(InvalidRegistryData) as err:
             validate_registry_readings(readings)
         assert err.value.reason == "vt_nt_total_mismatch"
+
+
+class TestNextPollDelay:
+    """Daily 03:05+jitter slot; incomplete retries use scan_interval."""
+
+    tz = ZoneInfo("Europe/Bratislava")
+    jitter = timedelta(minutes=10)
+    scan_6h = timedelta(hours=6)
+    scan_12h = timedelta(hours=12)
+
+    def _now(self, month: int, day: int, hour: int, minute: int = 0) -> datetime:
+        return datetime(2026, month, day, hour, minute, tzinfo=self.tz)
+
+    def test_before_slot_waits_until_slot(self):
+        now = self._now(11, 12, 1, 0)
+        schedule = next_poll_delay(
+            now,
+            jitter=self.jitter,
+            yesterday_complete=False,
+            scan_interval=self.scan_6h,
+        )
+        assert schedule.delay == timedelta(hours=2, minutes=15)
+
+    def test_incomplete_uses_configured_scan_interval(self):
+        now = self._now(11, 12, 3, 20)
+        schedule = next_poll_delay(
+            now,
+            jitter=self.jitter,
+            yesterday_complete=False,
+            scan_interval=self.scan_6h,
+        )
+        assert schedule.delay == self.scan_6h
+
+        schedule_12 = next_poll_delay(
+            now,
+            jitter=self.jitter,
+            yesterday_complete=False,
+            scan_interval=self.scan_12h,
+        )
+        assert schedule_12.delay == self.scan_12h
+
+    def test_incomplete_keeps_retrying_without_cap(self):
+        """No 1h×3 then-tomorrow rule — scan_interval applies all day."""
+        now = self._now(11, 12, 22, 0)
+        schedule = next_poll_delay(
+            now,
+            jitter=self.jitter,
+            yesterday_complete=False,
+            scan_interval=self.scan_6h,
+        )
+        assert schedule.delay == self.scan_6h
+
+    def test_complete_waits_until_tomorrow_slot(self):
+        now = self._now(11, 12, 10, 0)
+        schedule = next_poll_delay(
+            now,
+            jitter=self.jitter,
+            yesterday_complete=True,
+            scan_interval=self.scan_6h,
+        )
+        tomorrow = daily_poll_slot(now, self.jitter, day_offset=1)
+        assert schedule.delay == tomorrow - now
+
+    def test_debug_always_five_minutes(self):
+        now = self._now(11, 12, 1, 0)
+        schedule = next_poll_delay(
+            now,
+            jitter=self.jitter,
+            yesterday_complete=False,
+            scan_interval=self.scan_6h,
+            debug=True,
+        )
+        assert schedule.delay == timedelta(minutes=5)
+
+    def test_dst_spring_slot_exists(self):
+        # EU spring forward 2026-03-29 skips 02:00–03:00; 03:05 still exists.
+        now = datetime(2026, 3, 29, 1, 0, tzinfo=self.tz)
+        slot = daily_poll_slot(now, self.jitter)
+        assert slot.hour == 3
+        assert slot.minute == 15
+        schedule = next_poll_delay(
+            now,
+            jitter=self.jitter,
+            yesterday_complete=False,
+            scan_interval=self.scan_6h,
+        )
+        assert schedule.delay == slot - now
+
+    def test_dst_fall_slot_exists(self):
+        now = datetime(2026, 10, 25, 1, 0, tzinfo=self.tz)
+        slot = daily_poll_slot(now, self.jitter)
+        assert slot.hour == 3
+        assert slot.minute == 15
+        schedule = next_poll_delay(
+            now,
+            jitter=self.jitter,
+            yesterday_complete=True,
+            scan_interval=self.scan_6h,
+        )
+        assert now + schedule.delay == slot

@@ -1,10 +1,10 @@
 # Stredoslovenská distribučná (SSD IMS) pre Home Assistant
 
-[![Verzia](https://img.shields.io/github/v/release/baracudaz/ssd-ims?label=verzia)](https://github.com/baracudaz/ssd-ims/releases/latest)
+[![Verzia](https://img.shields.io/github/v/release/samsk/HA-SSD-IMS?include_prereleases&label=verzia)](https://github.com/samsk/HA-SSD-IMS/releases/latest)
 [![Marketplace](https://img.shields.io/badge/Marketplace-HACS-41BDF5?logo=homeassistantcommunitystore&logoColor=white)](#inštalácia)
-[![Testy](https://img.shields.io/github/actions/workflow/status/baracudaz/ssd-ims/lint.yml?branch=master&label=testy)](https://github.com/baracudaz/ssd-ims/actions/workflows/lint.yml)
-[![Validácia](https://img.shields.io/github/actions/workflow/status/baracudaz/ssd-ims/validate.yml?branch=master&label=valid%C3%A1cia)](https://github.com/baracudaz/ssd-ims/actions/workflows/validate.yml)
-[![Licencia](https://img.shields.io/github/license/baracudaz/ssd-ims?label=licencia)](LICENSE)
+[![Testy](https://img.shields.io/github/actions/workflow/status/samsk/HA-SSD-IMS/lint.yml?branch=master&label=testy)](https://github.com/samsk/HA-SSD-IMS/actions/workflows/lint.yml)
+[![Validácia](https://img.shields.io/github/actions/workflow/status/samsk/HA-SSD-IMS/validate.yml?branch=master&label=valid%C3%A1cia)](https://github.com/samsk/HA-SSD-IMS/actions/workflows/validate.yml)
+[![Licencia](https://img.shields.io/github/license/samsk/HA-SSD-IMS?label=licencia)](LICENSE)
 
 *English: a Home Assistant integration for the SSD energy data portal (ims.ssd.sk). User documentation is in Slovak; developer documentation is in English in [DEVELOPMENT.md](DEVELOPMENT.md).*
 
@@ -17,9 +17,10 @@ Integrácia sťahuje údaje o spotrebe a dodávke elektriny z Portálu energetic
 - Hodinová spotreba a dodávka do siete v paneli Energie, s históriou až 365 dní dozadu
 - Náklady v eurách podľa vašich cien za vysokú (VT) a nízku tarifu (NT)
 - Mesačné stavy registrov VT/NT a maximálny výkon z elektromera
+- Voliteľné trendové senzory (predvolene vypnuté) — napr. zaťaženie včera, rozdiel oproti minulému týždňu
 - Viac odberných miest naraz, každé s vlastným názvom
 
-Portál zverejňuje údaje raz denne po polnoci, najnovšie údaje sú preto vždy za včerajšok.
+Portál zverejňuje údaje raz denne po polnoci (zvyčajne okolo 2.–3. hodiny), najnovšie údaje sú preto vždy za včerajšok. Integrácia ich sťahuje po **3:05** miestneho času s náhodným posunom do 30 minút; ak ešte nie sú celé, opakuje pokus podľa zvoleného intervalu (6 / 12 / 24 h), kým nie je včerajšok úplný. Ručne môžete spustiť **Akcie → Obnoviť** (`ssd_ims.refresh`) — prosím, používajte to striedmo a nechajte bežať predvolený rozvrh; časté volania portál zbytočne zaťažujú a môžu viesť k zablokovaniu prístupu.
 
 ## Inštalácia
 
@@ -40,9 +41,6 @@ Ak ste integráciu nainštalovali cez HACS pred verziou 2026.11, nemusíte nič 
 
 </details>
 
-### Prechod na verziu 2.3.0
-
-Nič netreba robiť: štatistiky, entity aj nastavenia zostanú a nové entity registrov sa pridajú samé. Ak chcete vidieť náklady, postupujte podľa časti [Náklady](#náklady).
 
 ## Nastavenie
 
@@ -50,9 +48,11 @@ Nič netreba robiť: štatistiky, entity aj nastavenia zostanú a nové entity r
 2. Zadajte meno a heslo do portálu <https://ims.ssd.sk>
 3. Vyberte odberné miesta — sú označené EIC kódom odberného miesta, ktorý nájdete na faktúre
 4. Pomenujte ich, napr. adresou alebo názvom bytu
-5. Zvoľte interval aktualizácie (odporúčaných 6 hodín) a koľko dní histórie načítať (predvolene 7, najviac 365)
+5. Zvoľte koľko dní histórie načítať (predvolene 7, najviac 365) a interval opakovaných pokusov, kým portál nezverejní celý včerajšok. Prvé sťahovanie dňa je vždy po 3:05 — vtedy už portál údaje zvyčajne stihne zverejniť.
 
 Názov odberného miesta sa stane súčasťou ID jeho štatistík. Ak ho neskôr zmeníte cez **Rekonfigurácia**, začne sa nová séria a doterajšia história sa v paneli Energie neprenesie.
+
+Senzory včerajška po polnoci ukazujú **0**, kým portál nezverejní nový deň. V **Konfigurovať** môžete zapnúť, aby boli do zverejnenia **neznáme**. Interval 5 minút je len na ladenie a v UI sa zobrazí len pri premennej prostredia `SSD_IMS_DEBUG`.
 
 ## Panel Energie
 
@@ -94,6 +94,14 @@ Každé odberné miesto je samostatné zariadenie. Jeho EIC kód nájdete na str
 
 <img src="artifacts/screenshots/sensors.png" alt="Snímače odberného miesta" width="400">
 
+### Voliteľné senzory
+
+Trendové senzory (nízky výkon / zaťaženie / hodina špičky / podiel dodávky včera, rozdiel oproti minulému týždňu, 7- a 30-dňový priemer) sú **predvolene vypnuté**. Počítajú sa z včerajšieho grafu a už importovaných hodinových štatistík — bez ďalších volaní portálu.
+
+1. Otvorte **Nastavenia** → **Zariadenia a služby** → **Stredoslovenská distribučná (SSD IMS)** a kliknite na zariadenie odberného miesta
+2. V karte senzorov kliknite na odkaz typu *X entít nie je zobrazených* (alebo choďte na **Entity**, zapnite filter **Zobraziť vypnuté entity** a vyhľadajte podľa názvu odberného miesta)
+3. Otvorte senzor a zapnite **Povoliť**
+
 <details>
 <summary>Zoznam entít a štatistík</summary>
 
@@ -105,21 +113,21 @@ Každé odberné miesto je samostatné zariadenie. Jeho EIC kód nájdete na str
 | `sensor.<názov>_actual_supply_total` | Celková dodávka do siete (kWh) |
 | `sensor.<názov>_high_tariff_meter_reading` | Posledný mesačný stav registra VT, 1.8.1 (kWh) |
 | `sensor.<názov>_low_tariff_meter_reading` | Posledný mesačný stav registra NT, 1.8.2 (kWh) |
-| `sensor.<názov>_peak_demand` | Maximálny štvrťhodinový výkon za posledné obdobie, 1.6.0 (kW) |
-| `sensor.<názov>_low_demand` | Minimálny štvrťhodinový výkon za posledné obdobie (register), ak portál hodnotu vracia (kW) |
+| `sensor.<názov>_peak_demand` | Najvyšší odber (Peak Demand) za posledné mesačné obdobie, 1.6.0 (W; portál posiela kW) |
 | `sensor.<názov>_last_update` | Čas poslednej aktualizácie |
 
 Entity registrov majú atribúty `reading_time` (čas odpočtu) a `meter_serial_number` (výrobné číslo elektromera).
 
-Voliteľné trendové senzory sú **predvolene vypnuté** (zapnete ich na stránke zariadenia cez zobrazenie vypnutých entít). Počítajú sa z včerajšieho grafu a už importovaných hodinových štatistík — bez ďalších volaní portálu:
+Voliteľné (predvolene vypnuté):
 
 | Entita | Popis |
 |--------|-------|
-| `sensor.<názov>_low_demand_yesterday` | Najnižší štvrťhodinový výkon včera (kW) |
+| `sensor.<názov>_low_demand` | Najnižší odber (Base Demand) za posledné mesačné obdobie (register, W), len ak portál vráti `actualConsumptionMin` — u mnohých elektromerov chýba |
+| `sensor.<názov>_low_demand_yesterday` | Najnižší odber včera z grafu (W) |
 | `sensor.<názov>_load_factor_yesterday` | Priemerný / špičkový výkon včera (%); špička je z grafu, nie mesačný Peak Demand |
 | `sensor.<názov>_peak_hour_yesterday` | Hodina (0–23) s najvyššou spotrebou včera |
 | `sensor.<názov>_wow_delta` | Rozdiel spotreby oproti rovnakému dňu pred týždňom (kWh); atribút `wow_percent` |
-| `sensor.<názov>_avg_consumption_7d` / `_30d` | Priemerná denná spotreba za dni, ktoré majú údaje (kWh/d) |
+| `sensor.<názov>_avg_consumption_7d` / `_30d` | Priemerná denná spotreba za dni, ktoré majú údaje (kWh/d), zaokrúhlené na 3 desatinné miesta |
 | `sensor.<názov>_export_share_yesterday` | Podiel dodávky do siete = dodávka / (spotreba + dodávka) včera (%). Nie je to autarkia — portál nemá výrobu FVE, len odber a dodávku do siete. |
 
 | Štatistika | Popis |

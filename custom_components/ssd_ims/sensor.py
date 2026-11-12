@@ -21,6 +21,7 @@ from homeassistant.util import dt as dt_util
 from .const import (
     CONF_POD_NAME_MAPPING,
     CONF_POINT_OF_DELIVERY,
+    CONF_UNPUBLISHED_AS_UNKNOWN,
     DEFAULT_POINT_OF_DELIVERY,
     DOMAIN,
     PORTAL_URL,
@@ -28,8 +29,8 @@ from .const import (
     SENSOR_TYPE_ACTUAL_SUPPLY,
     SENSOR_TYPE_LABELS,
 )
-from .helpers import sanitize_name
 from .coordinator import SsdImsDataCoordinator
+from .helpers import sanitize_name
 
 _LOGGER = logging.getLogger(__name__)
 
@@ -167,6 +168,10 @@ class SsdImsYesterdaySensor(SsdImsEnergySensor):
     @property
     def native_value(self) -> StateType | None:
         """Return sensor value (yesterday's total)."""
+        if self.coordinator.config.get(CONF_UNPUBLISHED_AS_UNKNOWN) and not getattr(
+            self.coordinator, "yesterday_complete", False
+        ):
+            return None
         if not self.coordinator.data or not (
             pod_data := self.coordinator.data.get(self.pod_id)
         ):
@@ -240,12 +245,17 @@ class SsdImsLastUpdateSensor(SsdImsSensor):
 
 
 # (registry data key, entity name, unique-id suffix, is_energy)
+# Demand sensors use translation keys + watts; names are English fallbacks.
 REGISTER_SENSORS: tuple[tuple[str, str, str, bool], ...] = (
     ("consumption_vt", "High Tariff Meter Reading", "meter_reading_vt", True),
     ("consumption_nt", "Low Tariff Meter Reading", "meter_reading_nt", True),
     ("max_demand", "Peak Demand", "peak_demand", False),
-    ("min_demand", "Low Demand", "low_demand", False),
+    ("min_demand", "Base Demand", "low_demand", False),
 )
+
+# Register demand is stored as portal kW; sensors expose watts.
+_REGISTER_DEMAND_WATT_SUFFIXES = frozenset({"peak_demand", "low_demand"})
+_KW_TO_W = 1000.0
 
 # (trends key, translation_key, unique-id suffix, unit, device_class, as_int)
 TREND_SENSORS: tuple[
@@ -254,9 +264,9 @@ TREND_SENSORS: tuple[
 ] = (
     (
         "low_demand_kw",
+        "base_demand_yesterday",
         "low_demand_yesterday",
-        "low_demand_yesterday",
-        UnitOfPower.KILO_WATT,
+        UnitOfPower.WATT,
         SensorDeviceClass.POWER,
         False,
     ),
@@ -332,16 +342,30 @@ class SsdImsRegisterSensor(SsdImsSensor):
         """Initialize register sensor."""
         super().__init__(coordinator, pod_id, friendly_name)
         self._data_key, sensor_name, unique_suffix, is_energy = description
+        self._demand_as_watt = unique_suffix in _REGISTER_DEMAND_WATT_SUFFIXES
         if is_energy:
             self._attr_device_class = SensorDeviceClass.ENERGY
             self._attr_native_unit_of_measurement = UnitOfEnergy.KILO_WATT_HOUR
             self._attr_state_class = SensorStateClass.TOTAL_INCREASING
+            self._setup_entity_naming(sensor_name)
+        elif self._demand_as_watt:
+            self._attr_device_class = SensorDeviceClass.POWER
+            self._attr_native_unit_of_measurement = UnitOfPower.WATT
+            self._attr_state_class = SensorStateClass.MEASUREMENT
+            # peak_demand / base_demand — SK: Najvyšší / Najnižší odber
+            self._attr_translation_key = (
+                "base_demand" if unique_suffix == "low_demand" else "peak_demand"
+            )
         else:
             self._attr_device_class = SensorDeviceClass.POWER
             self._attr_native_unit_of_measurement = UnitOfPower.KILO_WATT
             self._attr_state_class = SensorStateClass.MEASUREMENT
+            self._setup_entity_naming(sensor_name)
         self._attr_unique_id = f"{pod_id}_{unique_suffix}"
-        self._setup_entity_naming(sensor_name)
+        # Portal often omits actualConsumptionMin; keep the entity off until
+        # the user enables it (unlike Peak Demand / meter readings).
+        if unique_suffix == "low_demand":
+            self._attr_entity_registry_enabled_default = False
 
     def _registry(self) -> dict[str, Any] | None:
         if not self.coordinator.data or not (
@@ -352,11 +376,16 @@ class SsdImsRegisterSensor(SsdImsSensor):
 
     @property
     def native_value(self) -> StateType | None:
-        """Return the latest register value."""
+        """Return the latest register value (demand as watts)."""
         if not (registry := self._registry()):
             return None
         value = registry.get(self._data_key)
-        return float(value) if value is not None else None
+        if value is None:
+            return None
+        number = float(value)
+        if self._demand_as_watt:
+            return number * _KW_TO_W
+        return number
 
     @property
     def extra_state_attributes(self) -> dict[str, Any] | None:
@@ -395,6 +424,8 @@ class SsdImsTrendSensor(SsdImsSensor):
         self._attr_unique_id = f"{pod_id}_{unique_suffix}"
         self._attr_native_unit_of_measurement = unit
         self._attr_device_class = device_class
+        if self._data_key in ("avg_7d_kwh", "avg_30d_kwh"):
+            self._attr_suggested_display_precision = 3
         if device_class == SensorDeviceClass.POWER:
             self._attr_state_class = SensorStateClass.MEASUREMENT
         elif (
@@ -416,6 +447,19 @@ class SsdImsTrendSensor(SsdImsSensor):
     @property
     def native_value(self) -> StateType | None:
         """Return the trend value, or None when unknown."""
+        # Yesterday-derived trends follow the unpublished-as-unknown option.
+        chart_keys = {
+            "low_demand_kw",
+            "load_factor_pct",
+            "peak_hour",
+            "export_share_pct",
+        }
+        if (
+            self._data_key in chart_keys
+            and self.coordinator.config.get(CONF_UNPUBLISHED_AS_UNKNOWN)
+            and not getattr(self.coordinator, "yesterday_complete", False)
+        ):
+            return None
         if not (trends := self._trends()):
             return None
         value = trends.get(self._data_key)
@@ -423,7 +467,13 @@ class SsdImsTrendSensor(SsdImsSensor):
             return None
         if self._as_int:
             return int(value)
-        return float(value)
+        number = float(value)
+        if self._data_key in ("avg_7d_kwh", "avg_30d_kwh"):
+            return round(number, 3)
+        # Chart min demand is stored as kW; expose watts without extra rounding.
+        if self._data_key == "low_demand_kw":
+            return number * _KW_TO_W
+        return number
 
     @property
     def extra_state_attributes(self) -> dict[str, Any] | None:
