@@ -11,7 +11,7 @@
       },
       "reauth_confirm": {
         "title": "Znova sa prihláste do SSD IMS",
-        "description": "Vaše prihlasovacie údaje pre {username} už nie sú platné (nesprávne, zmenené alebo vypršané na portáli). Ak heslo vypršalo, zmeňte ho na https://ims.ssd.sk a potom tu zadajte aktuálne heslo.",
+        "description": "Vaše prihlasovacie údaje pre {username} už nie sú platné (nesprávne, zmenené alebo vypršané na portáli). Ak heslo vypršalo, zmeňte ho na {portal_url} a potom tu zadajte aktuálne heslo.",
         "data": {
           "username": "Používateľské meno",
           "password": "Heslo"

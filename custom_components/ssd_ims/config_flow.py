@@ -41,6 +41,7 @@ from .const import (
     DOMAIN,
     NAME,
     POD_NAME_MAX_LENGTH,
+    PORTAL_URL,
     SCAN_INTERVAL_OPTIONS,
 )
 from .helpers import sanitize_name
@@ -190,6 +191,7 @@ class SsdImsConfigFlow(config_entries.ConfigFlow, domain=DOMAIN):
             errors=errors,
             description_placeholders={
                 "username": reauth_entry.data.get(CONF_USERNAME, ""),
+                "portal_url": PORTAL_URL,
             },
         )
 

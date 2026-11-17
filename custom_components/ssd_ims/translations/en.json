@@ -11,7 +11,7 @@
       },
       "reauth_confirm": {
         "title": "Re-authenticate with SSD IMS",
-        "description": "Your credentials for {username} are no longer valid (wrong, changed, or expired on the portal). If the password expired, change it at https://ims.ssd.sk, then enter the current password here.",
+        "description": "Your credentials for {username} are no longer valid (wrong, changed, or expired on the portal). If the password expired, change it at {portal_url}, then enter the current password here.",
         "data": {
           "username": "Username",
           "password": "Password"
