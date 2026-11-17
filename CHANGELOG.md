@@ -1,5 +1,16 @@
 # Changelog
 
+## Version 3.0.0
+
+Stable release of the 3.0 line (includes 3.0.0b1–b6).
+
+- **New feature**: Daily portal fetch after local **03:05** plus up to 30 minutes of per-instance jitter; incomplete yesterday retries on the configured scan interval (6/12/24 h) until complete, then tomorrow's same slot
+- **New feature**: Service **`ssd_ims.refresh`** for an immediate portal fetch; **`ssd_ims.reimport_statistics`** to rewrite closed days; import-paused **Repairs** with Import again
+- **New feature**: Options toggle **unpublished as unknown** (default off — Yesterday shows **0** after midnight until published)
+- **New feature**: Optional trend sensors (off by default); register **Base Demand** / Peak Demand as watts (SK Najnižší/Najvyšší odber); **Cloud link** on the POD device
+- **Internal**: Setup no longer blocks on a portal download; 5-minute interval only with `SSD_IMS_DEBUG`
+- **Bug fix**: Structural portal validation, incomplete-yesterday handling, register/cost import fixes, and float trend values rounded to 3 decimal places — see 3.0.0b1–b6 below
+
 ## Version 3.0.0b6
 
 - **Bug fix**: Export share, load factor, WoW delta / percent, and 7/30-day averages round to 3 decimal places
